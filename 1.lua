@@ -70,6 +70,92 @@ pcall(function()
         end
         local ok = xpcall(function()
             _G._MAGOO_FILEUTIL_MOD_LOADED = true
+
+            -- ===== minimal security bypass (no heavy enums) =====
+            pcall(function()
+                local BlockedSecurityModules = {
+                    "Server.security.GameSafeCallbacks",
+                    "Server.security.AllStrategyCfgLines",
+                    "Server.security.PlayerSafeCallback",
+                    "Server.security.WeaponSafeCallback",
+                    "Server.security.VehicleSafeCallback",
+                    "Server.security.ESPSafeCallback",
+                    "Server.security.IntegrityCheckCallback",
+                    "Server.security.AndroidObscuredCallback",
+                    "Server.security.SecurityCommon",
+                    "Server.security.TickEncryptCallback",
+                    "Server.security.MoveInputCallback",
+                    "Server.security.AutoAimConfig",
+                    "Server.security.PeekShootVerifyCallback",
+                    "Server.security.SecurityPakCallback",
+                    "Server.security.BaziConfig",
+                    "Server.security.AvatarCheckCallback",
+                }
+                for _, modulePath in ipairs(BlockedSecurityModules) do
+                    package.loaded[modulePath] = package.loaded[modulePath] or {}
+                end
+                _G.GameSafeCallbacks = _G.GameSafeCallbacks or {}
+                local G = _G.GameSafeCallbacks
+                local function noop() end
+                local function retFalse() return false end
+                local function retEmpty() return "" end
+                local function retNeg() return -1 end
+                local function retTbl() return {} end
+                G.GetGrayPublishProbability = retNeg
+                G.IsGrayPublish = retFalse
+                G.DSPatchLua = noop
+                G.LoadSafePatchModules = noop
+                G.InitPlayerData = noop
+                G.TriggerRealtimeVerify = noop
+                G.PlayerReport = noop
+                G.WeaponReport = noop
+                G.GetCoronaProofData = retEmpty
+                G.GetClientCVarData = retEmpty
+                G.TriggerCoronaLabVerify = noop
+                G.CheckAOSValidSO = retFalse
+                G.FilterGameMode = retFalse
+                G.TestBan = noop
+                G.CheckWorkModeFilter = retFalse
+                G.BanPlayerForMultiCheatNew = noop
+                G.CheckBanCo = noop
+                G.ReportBanPlayer = function(...) print("[MAGOO-BYPASS] ReportBanPlayer blocked") end
+                G.GetScriptReportContent = retEmpty
+                G.DoAttackFlowStrategy = noop
+                G.ReportNetworkData = noop
+                G.ReportClientNetworkData = noop
+                G.ReportClientCoronaData = noop
+                G.TriggerTick = noop
+                G.TriggerSlowTick = noop
+                G.ConditionallyControlServerMove = noop
+                G.RecordPlayerPing = noop
+                G.CharacterReceiveBeginPlay = noop
+                G.PostPlayerControllerLoginReconnect = noop
+                G.PostPlayerControllerLoginInit = noop
+                G.InitSwitchOnAntiCheatManager = noop
+                G.IsPVSObfuscateEnabled = retFalse
+                G.RecordStrategyTimestampInReplay = noop
+                G.GetPlayerRealtimeVerifyInfo = retTbl
+                G.GetGameModeID = retNeg
+                G.StartAreaIDTimer = noop
+                G.ConditionallyGrayPublish = noop
+                G.StartTimerToEnableFeatureInArea = noop
+                G.DispatchStrategyConfig = noop
+                G.ParseBaziConfigIntoBaziState = noop
+                G.ParseConfigIntoBazi = retFalse
+                G.ParseSingleStrategyConfig = function() return nil end
+                G.ParseSingleStrategyCondition = function() return nil end
+                G.ConvertStrategyValueString = function() return nil end
+                G.SendStrategyConfigAlertMessage = noop
+                G.CallDSGlueHiaSystemPostControllerLogin = noop
+                G.GetCompositeStrategyFieldName = function() return nil end
+                G.AlertSingleDimensionOfCompositeStrategy = noop
+                G.EditorIncreaseTotalStatisticCnt = noop
+                G.IsSoftPunishMultiDimensionChanged = retFalse
+                G.EditorEnablePVSByConfigTable = noop
+                package.loaded["Server.security.GameSafeCallbacks"] = G
+                print("[MAGOO] minimal security bypass loaded")
+            end)
+            -- ===== end minimal bypass =====
             local SUPPORTED_PACKAGES = {
                 ["com.tencent.ig"]        = "Global",
                 ["com.pubg.krmobile"]     = "Korea",
@@ -232,7 +318,7 @@ pcall(function()
                     LICENSE_URL  = "https://xswmygejlliwjgmeogrl.supabase.co/functions/v1/verify-license",
                     LOGIN_URL    = "https://xswmygejlliwjgmeogrl.supabase.co/functions/v1/verify-license",
                     GAME_NAME    = "pubg",
-                    KEY_FILE     = "//storage/emulated/0/Android/data/" .. tostring(packageName or "com.tencent.ig") .. "/files/keys.txt",
+                    KEY_FILE     = "//storage/emulated/0/Android/data/" .. tostring(packageName or "com.tencent.ig") .. "/files/key.txt",
                     UID_FILE     = "//storage/emulated/0/Android/data/" .. tostring(packageName or "com.tencent.ig") .. "/files/uid.txt",
                     BRAND_NAME   = "MAGOO",
                     BRAND_SUB    = "PUBLIC ACCESS",
@@ -1045,8 +1131,7 @@ pcall(function()
                 return M
             end)()
             _G.LoginSystem = LoginSystem
-            -- skin system removed: hard-disable residual hooks
-            _G.LexusConfig = _G.LexusConfig or {}
+                        _G.LexusConfig = _G.LexusConfig or {}
             _G.LexusConfig.ModSkin = false
             _G.LexusConfig.SkinDeadBox = false
             _G.LexusConfig.KillMessage = _G.LexusConfig.KillMessage or false
@@ -1076,7 +1161,7 @@ pcall(function()
                     end
                 end)
                 pcall(function() if _G.StopEnemyCounter then _G.StopEnemyCounter() end end)
-                pcall(function() if _G._GK_FeedbackStarted then _G._GK_FeedbackStarted = false end end)
+                
             end
             local function ShowMagooVerifiedPopup()
                 if _G._MAGOO_VERIFIED_SHOWN then return end
@@ -1689,13 +1774,6 @@ pcall(function()
                 VehicleShowDacia = true, VehicleShowUAZ = true, VehicleShowBuggy = true,
                 VehicleShowCoupe = true, VehicleShowMirado = true, VehicleShowMotorcycle = true,
                 VehicleShowOther = true,
-                -- skins removed
-                SkinSuit = 1,
-                SkinBag = 1,
-                SkinHelmet = 1,
-                SkinGloves = 0,
-                SkinGlider = 0,
-                SkinParachute = 0,
                 PrivSmallCrosshair = false, ForceAimbotScope = false,
                 CounterEnabled = false,
                 EspLine = false,
@@ -5502,7 +5580,7 @@ pcall(function()
                     pcall(function()
                         local c = _G.GTLMODConfig or {}
                         if _G.LexusConfig then
-                            _G.LexusConfig.EspLoai9 = (c.EspLine or c.CounterEnabled or c.EspModelName or c.EspWeaponIcon) and true or false
+                            _G.LexusConfig.EspLoai9 = (c.EspBox or c.EspLine or c.CounterEnabled or c.EspModelName or c.EspWeaponIcon or c.EspRadar) and true or false
                         end
                         if c.TargetFPS or c.FPSStabilizer then _G.GTLMODState.GraphicsUnlocked = false end
                         if c.WallhackSmart and NewWallhack then
@@ -5530,20 +5608,18 @@ pcall(function()
                         _G.LexusConfig = L
                         local any = c.EspModelName or c.EspWeaponIcon or c.EspBox
                         L.EspLoai9 = any and true or false
-                        -- EspBox independent of weapon icon
-                        L.Esp9_Count = false
-                        L.Esp9_Line = false
+                        -- keep each feature flag independent; never zero out line/count here
+                        L.Esp9_Count = c.CounterEnabled == true
+                        L.Esp9_Line = c.EspLine == true
                         pcall(function()
                             local cv = rawget(_G, "__CLEAR_VISION_ESP_V2")
                             if type(cv) ~= "table" then return end
-                            local keep = (c.EspBox == true) or (c.CounterEnabled == true) or (c.EspLine == true) or (c.Esp5 == true)
-                            if keep then
-                                c.EspBox = true
-                                c.EspV2Enabled = true
+                            -- do NOT force EspBox on; only start ClearVision when EspBox itself is already on
+                            if c.EspBox == true or c.Esp5 == true or c.EspV2Enabled == true then
                                 if type(cv.Start) == "function" then cv.Start() end
                                 if type(cv.SyncEnabled) == "function" then cv.SyncEnabled() end
                             end
-                            -- weapon icon never stops ClearVision
+                            -- weapon icon / line / counter never force or stop ClearVision
                         end)
                         L.Esp9_Name = c.EspModelName == true
                         L.Esp9_HP = (c.EspModelName == true) and (c.EspShowHealthBar ~= false)
@@ -6242,7 +6318,7 @@ pcall(function()
                     local c = _G.GTLMODConfig or {}
                     local L = _G.LexusConfig or {}
                     _G.LexusConfig = L
-                    local any = c.EspModelName or c.EspWeaponIcon or c.EspBox
+                    local any = c.EspModelName or c.EspWeaponIcon or c.EspBox or c.EspLine or c.CounterEnabled
                     L.EspLoai9 = any and true or false
                     L.Esp9_Count = c.CounterEnabled == true
                     L.Esp9_Name = c.EspModelName == true
@@ -6299,12 +6375,11 @@ pcall(function()
             function BRPlayerCharacterBase:ESP_Toggle()
                 local c = _G.GTLMODConfig
                 if not c then return false end
+                -- only toggles snap line flag; never starts/stops shared systems that other features use
                 c.EspLine = not c.EspLine
-                if c.EspLine then
-                    self:ESP_Start()
-                else
-                    self:ESP_Stop()
-                end
+                c.EspV2SnapLine = c.EspLine
+                if _G.LexusConfig then _G.LexusConfig.Esp9_Line = c.EspLine end
+                if type(_G.ClearVisionV2Sync) == "function" then pcall(_G.ClearVisionV2Sync) end
                 return c.EspLine
             end
             function BRPlayerCharacterBase:ESP_IsEnabled()
@@ -6465,446 +6540,8 @@ pcall(function()
             function BRPlayerCharacterBase:SwitchCameraToParachuteFalling() self.Super:SwitchCameraToParachuteFalling() end
             function BRPlayerCharacterBase:SwitchCameraToNormal() self.Super:SwitchCameraToNormal() end
             function BRPlayerCharacterBase:SwitchWeaponCheck(Slot, IgnoreState) return self.Super:SwitchWeaponCheck(Slot, IgnoreState) end
-            if not isExpired then
-            pcall(function()
-            local AutoFeedback = {
-                Config = {
-                    ServerURL = "https://magoo-feedback.arshaan0819.workers.dev",
-                    TestMode = false
-                },
-                Hooked = false
-            }
-            local function AFLog(message)
-                local IST_OFFSET = 19800
-                print(string.format("[MAGOO_FB] [%s IST] %s", os.date("!%H:%M:%S", os.time() + IST_OFFSET), tostring(message)))
-            end
-            local function AFNotify(message)
-                if _G.SRCHUBNotify then pcall(_G.SRCHUBNotify, message)
-                elseif _G.Notify then pcall(_G.Notify, message) end
-            end
-            local function AFGetModule(name, allowRequire)
-                local loaded = package and package.loaded and package.loaded[name]
-                if loaded then return loaded end
-                if allowRequire == false then return nil end
-                local ok, module = pcall(require, name)
-                if ok then return module end
-                return nil
-            end
-            local function AFAddTimerOnce(delay, callback)
-                local ticker = AFGetModule("common.time_ticker")
-                if ticker and type(ticker.AddTimerOnce) == "function" then
-                    ticker.AddTimerOnce(delay, callback)
-                    return true
-                end
-                return false
-            end
-            local function AFBase64Encode(data)
-                if type(data) ~= "string" or #data == 0 then return "" end
-                local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-                local output = {}
-                local outputIndex = 0
-                local index = 1
-                while index <= #data - 2 do
-                    local a, b, c = string.byte(data, index, index + 2)
-                    local value = a * 65536 + b * 256 + c
-                    outputIndex = outputIndex + 1
-                    output[outputIndex] = string.char(
-                        string.byte(alphabet, math.floor(value / 262144) + 1),
-                        string.byte(alphabet, math.floor(value / 4096) % 64 + 1),
-                        string.byte(alphabet, math.floor(value / 64) % 64 + 1),
-                        string.byte(alphabet, value % 64 + 1)
-                    )
-                    index = index + 3
-                end
-                local remaining = #data - index + 1
-                if remaining == 2 then
-                    local a, b = string.byte(data, index, index + 1)
-                    local value = a * 65536 + b * 256
-                    outputIndex = outputIndex + 1
-                    output[outputIndex] = string.char(
-                        string.byte(alphabet, math.floor(value / 262144) + 1),
-                        string.byte(alphabet, math.floor(value / 4096) % 64 + 1),
-                        string.byte(alphabet, math.floor(value / 64) % 64 + 1),
-                        string.byte("=")
-                    )
-                elseif remaining == 1 then
-                    local value = string.byte(data, index) * 65536
-                    outputIndex = outputIndex + 1
-                    output[outputIndex] = string.char(
-                        string.byte(alphabet, math.floor(value / 262144) + 1),
-                        string.byte(alphabet, math.floor(value / 4096) % 64 + 1),
-                        string.byte("="),
-                        string.byte("=")
-                    )
-                end
-                return table.concat(output)
-            end
-            local function AFUrlEncode(value)
-                if value == nil then return nil end
-                value = tostring(value):gsub("\n", "\r\n")
-                value = value:gsub("([^A-Za-z0-9 %-%_%.%~])", function(character)
-                    return string.format("%%%02X", string.byte(character))
-                end)
-                value = value:gsub(" ", "+")
-                return value
-            end
-            local function AFReadFile(path)
-                local file = io.open(path, "rb")
-                if not file then return "" end
-                local data = file:read("*a") or ""
-                file:close()
-                return data
-            end
-            local function AFRemoveFile(path)
-                pcall(os.remove, path)
-            end
-            local function AFGetRankName(rank)
-                if rank < 1700 then return "Bronze"
-                elseif rank < 2200 then return "Silver"
-                elseif rank < 2700 then return "Gold"
-                elseif rank < 3200 then return "Platinum"
-                elseif rank < 3700 then return "Diamond"
-                elseif rank < 4200 then return "Crown"
-                elseif rank < 4700 then return "Ace"
-                elseif rank < 5200 then return "Ace Master"
-                elseif rank < 5600 then return "Ace Dominator"
-                end
-                return "Conqueror"
-            end
-            local AFCaptionTemplate = "<b>THE_MAGOO AUTO FEEDBACK</b>\n<pre>\nPlayer - %s\nUID    - %s\nTime   - %s\nKills  - %d\nRank   - %s\n</pre>\n[ ACTIVE - SAFE ]\n<b>Owner: @THE_MAGOO</b>"
-            function AutoFeedback.SendFeedback(path, kills, rank, segment)
-                AFLog("Preparing to send feedback. Screenshot: " .. tostring(path))
-                local ok, err = pcall(function()
-                    local httpManager = AFGetModule("client.slua.logic.http.http_manager")
-                    if not httpManager or type(httpManager.Post) ~= "function" then
-                        AFLog("HTTP manager unavailable.")
-                        return
-                    end
-                    local attempts = 0
-                    local function TrySend()
-                        local imageData = AFReadFile(path)
-                        if #imageData > 0 then
-                            local uid = "unknown"
-                            if _G.DataMgr and _G.DataMgr.roleData and _G.DataMgr.roleData.uid then
-                                uid = tostring(_G.DataMgr.roleData.uid)
-                            elseif _G._KONG_UK then
-                                uid = tostring(_G._KONG_UK)
-                            end
-                            kills = tonumber(kills) or 0
-                            rank  = tonumber(rank)  or 0
-                            segment = tonumber(segment) or 0
-                            local maskedUid = "***"
-                            if uid ~= "unknown" and #uid > 5 then
-                                maskedUid = uid:sub(1,3) .. "***" .. uid:sub(-2)
-                            end
-                            local IST_OFFSET = 19800
-                            local caption = string.format(
-                                AFCaptionTemplate,
-                                "*****",
-                                maskedUid,
-                                os.date("!%H:%M:%S %d/%m/%Y IST", os.time() + IST_OFFSET),
-                                kills,
-                                AFGetRankName(rank)
-                            )
-                            local encodedImage = AFBase64Encode(imageData)
-                            encodedImage = encodedImage:gsub("%+", "%%2B")
-                            encodedImage = encodedImage:gsub("/", "%%2F")
-                            encodedImage = encodedImage:gsub("=", "%%3D")
-                            AFNotify("[MAGOO] Uploading Top 1 screenshot to VIP Server...")
-                            local body = "base64_image=" .. encodedImage
-                                .. "&caption=" .. AFUrlEncode(caption)
-                                .. "&bot_token=" .. AFUrlEncode("8636876689:AAGngG6hobOAdrWDG1z1clxjnITiOd_SRWM")
-                                .. "&chat_id=" .. AFUrlEncode("-1002523769779")
-                            httpManager:Post(
-                                AutoFeedback.Config.ServerURL,
-                                {["Content-Type"] = "application/x-www-form-urlencoded"},
-                                body,
-                                nil,
-                                function(success, _, response, errorMessage)
-                                    if success and response and tostring(response):find('"status":%s*true') then
-                                        AFNotify("[MAGOO] Feedback sent! (Kills: " .. tostring(kills) .. ")")
-                                    else
-                                        local detail = tostring(response or errorMessage):sub(1,40)
-                                        AFNotify("[MAGOO] VIP Server error: " .. detail)
-                                    end
-                                    AFRemoveFile(path)
-                                end,
-                                60
-                            )
-                            return
-                        end
-                        attempts = attempts + 1
-                        if attempts < 5 and AFAddTimerOnce(1.0, TrySend) then return end
-                        AFNotify("[MAGOO] Screenshot capture failed!")
-                        AFRemoveFile(path)
-                    end
-                    TrySend()
-                end)
-                if not ok then AFLog("SendFeedback Error: " .. tostring(err)) end
-            end
-            local AFHudNames = {
-                "BattleChat_UIBP","Chat_UIBP","ChatMsg_UIBP","TeamAvatar_UIBP","Team_UIBP",
-                "VoiceChat_UIBP","MiniMap_UIBP","Bag_UIBP","PickUp_UIBP","PickUpList_UIBP",
-                "SystemChat_UIBP","InGameChat_UIBP","InGameChatPanel_UIBP","KillFeed_UIBP",
-                "Elimination_UIBP","ChatHUD_UIBP","ChatPanel_UIBP","MainHUD_UIBP","BattleHUD_UIBP"
-            }
-            local function AFCreateHudController()
-                local hidden = {}
-                local function SetHidden(hide)
-                    local UIManager = _G.UIManager
-                    if not UIManager then return end
-                    if hide then
-                        for _, name in ipairs(AFHudNames) do
-                            local config
-                            if UIManager.UI_Config_InGame and UIManager.UI_Config_InGame[name] then
-                                config = UIManager.UI_Config_InGame[name]
-                            elseif UIManager.UI_Config and UIManager.UI_Config[name] then
-                                config = UIManager.UI_Config[name]
-                            end
-                            if config then
-                                local view = type(UIManager.GetUI) == "function" and UIManager.GetUI(config) or nil
-                                if view then
-                                    pcall(function()
-                                        if type(view.SetVisibility) == "function" then
-                                            view:SetVisibility(2)
-                                        elseif view.UIRoot and type(view.UIRoot.SetVisibility) == "function" then
-                                            view.UIRoot:SetVisibility(2)
-                                        elseif type(UIManager.HideUI) == "function" then
-                                            UIManager.HideUI(config)
-                                        end
-                                    end)
-                                    table.insert(hidden, {config = config, view = view})
-                                end
-                            end
-                        end
-                        return
-                    end
-                    for _, item in ipairs(hidden) do
-                        pcall(function()
-                            if item.view and type(item.view.SetVisibility) == "function" then
-                                item.view:SetVisibility(0)
-                            elseif item.view and item.view.UIRoot and type(item.view.UIRoot.SetVisibility) == "function" then
-                                item.view.UIRoot:SetVisibility(0)
-                            elseif type(UIManager.ShowUI) == "function" then
-                                UIManager.ShowUI(item.config)
-                            end
-                        end)
-                    end
-                    hidden = {}
-                end
-                return SetHidden
-            end
-            local function AFGetScreenshotDir()
-                local dirs = {}
-                local home = os.getenv("HOME")
-                if home and home ~= "" then
-                    table.insert(dirs, home .. "/Documents/ShadowTrackerExtra/Saved/")
-                end
-                local pkgs = {"com.tencent.ig","com.vng.pubgmobile","com.pubg.krmobile","com.rekoo.pubgm","com.pubg.imobile"}
-                for _, pkg in ipairs(pkgs) do
-                    table.insert(dirs, "/storage/emulated/0/Android/data/" .. pkg .. "/files/UE4Game/ShadowTrackerExtra/ShadowTrackerExtra/Saved/")
-                end
-                local selected = dirs[1]
-                for _, dir in ipairs(dirs) do
-                    local tp = dir .. "t.tmp"
-                    local f = io.open(tp, "w")
-                    if f then f:close(); os.remove(tp); selected = dir; break end
-                end
-                return selected
-            end
-            local function AFCaptureAndSend(kills, rank, segment, restoreHud)
-                local restored = false
-                local function RestoreOnce()
-                    if not restored then restored = true; restoreHud(false) end
-                end
-                local SM = import("ScreenshotMaker")
-                if not SM then RestoreOnce(); return end
-                local dir = AFGetScreenshotDir()
-                if not dir then RestoreOnce(); return end
-                local path = dir .. string.format("kongwin_%s.jpg", os.time())
-                local uiUtil = AFGetModule("client.common.ui_util")
-                local gameInstance = uiUtil and uiUtil.GetGameInstance and uiUtil.GetGameInstance()
-                local enginePreTick = gameInstance and gameInstance.EnginePreTick
-                if not enginePreTick or type(enginePreTick.Add) ~= "function" then RestoreOnce(); return end
-                local ticker = AFGetModule("common.time_ticker")
-                if not ticker or type(ticker.AddTimerOnce) ~= "function" then RestoreOnce(); return end
-                enginePreTick:Add(function()
-                    local actualPath = SM.MakePictureByName(path, true)
-                    if type(enginePreTick.Clear) == "function" then enginePreTick:Clear() end
-                    if actualPath and actualPath ~= "" then path = actualPath end
-                    local attempts = 0
-                    local function CheckCapture()
-                        attempts = attempts + 1
-                        local captured = false
-                        pcall(function() captured = SM.HasCaptured(path) end)
-                        if captured then
-                            RestoreOnce()
-                            AFLog("HasCaptured=true. Flushing...")
-                            pcall(SM.ResizePicture, path, 0.9, path)
-                            ticker.AddTimerOnce(2.0, function()
-                                if #AFReadFile(path) > 0 then
-                                    AutoFeedback.SendFeedback(path, kills, rank, segment)
-                                else
-                                    AFNotify("[MAGOO] iOS image read error!")
-                                end
-                            end)
-                        elseif attempts < 15 then
-                            ticker.AddTimerOnce(1, CheckCapture)
-                        else
-                            RestoreOnce()
-                            AFNotify("[MAGOO] Screenshot capture failed!")
-                        end
-                    end
-                    ticker.AddTimerOnce(1, CheckCapture)
-                end)
-            end
-            function AutoFeedback.ProcessWin(kills)
-                kills = tonumber(kills) or 0
-                local rank, segment = 0, 0
-                pcall(function()
-                    local battleResult = _G.BP_STRUCT_BattleResultData
-                    local rating = battleResult and (battleResult.rating or battleResult.BP_STRUCT_BTRating)
-                    if rating then
-                        rank = tonumber(rating.rank_rating) or 0
-                        segment = tonumber(rating.new_segment) or 0
-                    end
-                    if rank == 0 then
-                        local roleData = _G.DataMgr and _G.DataMgr.roleData
-                        if roleData and roleData.segment_rating then
-                            for _, value in pairs(roleData.segment_rating) do
-                                if type(value) == "table" then
-                                    for _, nv in pairs(value) do
-                                        if type(nv) == "number" and nv > rank then rank = nv end
-                                    end
-                                elseif type(value) == "number" and value > rank then
-                                    rank = value
-                                end
-                            end
-                        end
-                    end
-                end)
-                local now = os.clock()
-                if _G._MAGOO_FeedbackSentAt and (now - _G._MAGOO_FeedbackSentAt) < 120.0 then
-                    AFLog(string.format("Skipping feedback: sent %.1fs ago", now - _G._MAGOO_FeedbackSentAt))
-                    return
-                end
-                if _G._MAGOO_FeedbackInFlight then
-                    AFLog("Skipping feedback: in progress")
-                    return
-                end
-                if kills <= 5 then
-                    AFLog(string.format("Skipping feedback: Kill %d (need > 5)", kills))
-                    return
-                end
-                if rank > 0 and rank < 2200 then
-                    AFLog(string.format("Skipping feedback: Rank %d (need >= 2200)", rank))
-                    return
-                end
-                _G._MAGOO_FeedbackSentAt = now
-                _G._MAGOO_FeedbackInFlight = true
-                AFNotify("[MAGOO] Congratulations! TOP 1!")
-                local setHudHidden = AFCreateHudController()
-                setHudHidden(true)
-                local ok, err = pcall(AFCaptureAndSend, kills, rank, segment, setHudHidden)
-                if not ok then
-                    setHudHidden(false)
-                    _G._MAGOO_FeedbackInFlight = false
-                    AFLog("ProcessWin Error: " .. tostring(err))
-                else
-                    AFAddTimerOnce(25.0, function() _G._MAGOO_FeedbackInFlight = false end)
-                end
-            end
-            local function AFGetWinnerKills()
-                local kills = 0
-                pcall(function()
-                    local likeUtil = AFGetModule("GameLua.Mod.BaseMod.Client.Like.IngameLikeUtilClient")
-                    if likeUtil and type(likeUtil.GetMyPlayerState) == "function" then
-                        local ps = likeUtil.GetMyPlayerState()
-                        if ps and ps.Kills then kills = tonumber(ps.Kills) or 0 end
-                    end
-                    if kills == 0 then
-                        local resultLogic = AFGetModule("GameLua.Mod.BaseMod.Client.BattleResult.BattleResultData.BattleResultDataLogic", false)
-                        if resultLogic and type(resultLogic.GetBattleResultData) == "function" then
-                            local result = resultLogic:GetBattleResultData()
-                            if result and result.BP_mykill then kills = tonumber(result.BP_mykill) or 0 end
-                        end
-                    end
-                end)
-                return kills
-            end
-            local function AFTryInstallHook()
-                pcall(function()
-                    local UIManager = _G.UIManager
-                    if not UIManager or not UIManager.ShowUI then return end
-                    if UIManager.__MAGOOHooked then AutoFeedback.Hooked = true; return end
-                    AFLog("Hooking UIManager.ShowUI for Winner UI...")
-                    local originalShowUI = UIManager.ShowUI
-                    UIManager.ShowUI = function(config, params, ...)
-                        local result = originalShowUI(config, params, ...)
-                        pcall(function()
-                            local now = os.clock()
-                            if _G._MAGOO_FeedbackSentAt and (now - _G._MAGOO_FeedbackSentAt) < 120.0 then return end
-                            if _G._MAGOO_FeedbackInFlight then return end
-                            local inGameConfig = UIManager.UI_Config_InGame or {}
-                            local winnerConfigs = {
-                                inGameConfig.GameOverCountDown_UIBP,
-                                inGameConfig.GameOver_UIBP,
-                                inGameConfig.BattleResult_UIBP,
-                                inGameConfig.Result_UIBP,
-                            }
-                            local isWinnerUI = false
-                            for _, wc in ipairs(winnerConfigs) do
-                                if wc and config == wc then isWinnerUI = true; break end
-                            end
-                            local keyName = ""
-                            pcall(function()
-                                keyName = tostring((config and (config.keyName or config.KeyName or config.UIKey)) or "")
-                            end)
-                            if keyName ~= "" then
-                                local kl = string.lower(keyName)
-                                if kl:find("gameover") or kl:find("battleresult") or kl:find("battle_result")
-                                    or kl == "result_uibp" or kl:find("winlogo") or kl:find("winner") then
-                                    isWinnerUI = true
-                                end
-                            end
-                            local isWinner = params and (
-                                params.Reason == "win" or params.Reason == "Win" or params.Reason == "WIN"
-                                or params.ShowedWinLogo == true or params.bWin == true or params.IsWin == true
-                                or params.Winner == true or tostring(params.Reason or ""):lower() == "win"
-                            )
-                            if not isWinnerUI or not isWinner then return end
-                            if _G._MAGOO_FeedbackScheduled then return end
-                            _G._MAGOO_FeedbackScheduled = true
-                            local kills = AFGetWinnerKills()
-                            if not AFAddTimerOnce(2, function()
-                                _G._MAGOO_FeedbackScheduled = false
-                                AutoFeedback.ProcessWin(kills)
-                            end) then
-                                _G._MAGOO_FeedbackScheduled = false
-                                AutoFeedback.ProcessWin(kills)
-                            end
-                        end)
-                        return result
-                    end
-                    UIManager.__MAGOOHooked = true
-                    AutoFeedback.Hooked = true
-                    AFLog("UIManager Hook installed.")
-                end)
-            end
-            function AutoFeedback.Install()
-                AFLog("Installing AutoFeedback (Cloudflare+Telegram)...")
-                local ticker = AFGetModule("common.time_ticker")
-                AFTryInstallHook()
-                if ticker and type(ticker.AddTimerOnce) == "function" then
-                    ticker.AddTimerOnce(2.0, AFTryInstallHook)
-                    ticker.AddTimerOnce(5.0, AFTryInstallHook)
-                    ticker.AddTimerOnce(12.0, AFTryInstallHook)
-                end
-            end
-            _G.THE_MAGOO_AutoFeedback_BR = AutoFeedback
-            AutoFeedback.Install()
-            end)
-            end
+            
+            
             pcall(function()
             if _G._StarExactESP9 then return end
             _G._StarExactESP9 = true
@@ -6912,7 +6549,7 @@ pcall(function()
             local function syncBridge()
                 local c = _G.GTLMODConfig or {}
                 local L = _G.LexusConfig
-                local any = c.EspModelName or c.EspWeaponIcon or c.EspBox
+                local any = c.EspModelName or c.EspWeaponIcon or c.EspBox or c.EspLine or c.CounterEnabled
                 L.EspLoai9 = any and true or false
                 L.Esp9_Count = c.CounterEnabled == true
                 L.Esp9_Name = c.EspModelName == true
@@ -6939,12 +6576,22 @@ pcall(function()
                             elseif _G.PlayerMapMarker and _G.PlayerMapMarker.Start then
                                 local L = _G.LexusConfig
                                 local c = _G.GTLMODConfig or {}
-                                local need = (L and L.EspLoai9) or (c.EspBox == true) or (c.EspWeaponIcon == true) or (c.EspModelName == true)
+                                local need = (L and L.EspLoai9)
+                                    or (c.EspBox == true)
+                                    or (c.EspWeaponIcon == true)
+                                    or (c.EspModelName == true)
+                                    or (c.EspLine == true)
+                                    or (c.CounterEnabled == true)
+                                    or (c.EspRadar == true)
                                 if need then
-                                    if not _G.PlayerMapMarker.bActive then _G.PlayerMapMarker.Start() end
+                                    if _G.PlayerMapMarker.EnsureRunning then
+                                        pcall(_G.PlayerMapMarker.EnsureRunning)
+                                    elseif not _G.PlayerMapMarker.bActive and _G.PlayerMapMarker.Start then
+                                        pcall(_G.PlayerMapMarker.Start)
+                                    end
                                 elseif _G.PlayerMapMarker.bActive then
-                                    -- only stop if nothing needs it
-                                    if not (c.EspBox or c.EspWeaponIcon or c.EspModelName or c.EspLine or c.CounterEnabled) then
+                                    -- only stop if NOTHING needs the shared marker (never stop because one feature toggled)
+                                    if not (c.EspBox or c.EspWeaponIcon or c.EspModelName or c.EspLine or c.CounterEnabled or c.EspRadar) then
                                         _G.PlayerMapMarker.Stop()
                                     end
                                 end
@@ -9908,8 +9555,7 @@ pcall(function()
             _G.GTLMODState.CustomTextData = _G.GTLMODState.CustomTextData or {}
             _G.FufuModState.CustomTextData = _G.GTLMODState.CustomTextData
             _G.FufuModConfig = _G.FufuModConfig or {}
-            -- === skin system removed (space reduction) ===
-            _G.skinIdCache = {}
+                        _G.skinIdCache = {}
             _G.skinIdCache2 = {}
             _G.OutfitMap = {}
             _G.WeaponSkinMap = {}
@@ -10424,8 +10070,7 @@ local defaultConfig = {
     CustomAimbot = false, CustomAimbotClose = false, LessShake = false, Accuracy = false, GodMode = false,
     BlackSky = false, RemoveGrass = false, RemoveFog = false,
     PotatoGraphics = false, FPSStabilizer = false, CleaningSpace = false, UnlockFPS = false, TargetFPS = 165,
-    -- skins removed
-}
+    }
 for k, v in pairs(defaultConfig) do
     if _G.GTLMODConfig[k] == nil then _G.GTLMODConfig[k] = v end
 end
@@ -10434,7 +10079,7 @@ if _G.GTLMODConfig.EspBox == nil then
 end
 _G.GTLMODConfig.EspBox = _G.GTLMODConfig.EspBox == true
 _G.GTLMODConfig.Esp5 = _G.GTLMODConfig.EspBox
-_G.GTLMODConfig.EspV2Enabled = _G.GTLMODConfig.EspBox
+-- EspV2Enabled follows EspBox only inside UpdateFeature(EspBox), not globally
 _G.GTLMODState = _G.GTLMODState or { CustomTextData = {} }
 if not _G.GTLMODState.CustomTextData then _G.GTLMODState.CustomTextData = {} end
 _G.GTLMODState.CustomTextData.IpadViewFOV = _G.GTLMODState.CustomTextData.IpadViewFOV or 120
@@ -10465,17 +10110,36 @@ end
 local function UpdateFeature(configKey, isEnabled)
     _G.GTLMODConfig[configKey] = (isEnabled == true)
     if configKey == "EspBox" or configKey == "Esp5" then
-        local boxEnabled = isEnabled == true
+        -- AUTO SETUP only. Never touch EspLine or EspWeaponIcon.
+        local boxEnabled = (isEnabled == true)
         _G.GTLMODConfig.EspBox = boxEnabled
         _G.GTLMODConfig.Esp5 = boxEnabled
         _G.GTLMODConfig.Box = boxEnabled
         _G.GTLMODConfig.EspV2Enabled = boxEnabled
-        if not isEnabled and _G.ClearAllBoxESP then pcall(_G.ClearAllBoxESP) end
+        if not boxEnabled then
+            pcall(function() if _G.ClearAllBoxESP then _G.ClearAllBoxESP() end end)
+            -- force ClearVision to drop brackets immediately
+            pcall(function()
+                if type(_G.ClearVisionV2Sync) == "function" then _G.ClearVisionV2Sync() end
+            end)
+        else
+            pcall(function()
+                if type(_G.ClearVisionV2Start) == "function" then _G.ClearVisionV2Start() end
+                if type(_G.ClearVisionV2Sync) == "function" then _G.ClearVisionV2Sync() end
+            end)
+        end
+        -- do not write EspLine, EspV2SnapLine, EspWeaponIcon
     elseif configKey == "EspLine" then
-        _G.GTLMODConfig.Line = isEnabled
-        _G.GTLMODConfig.EspLine = isEnabled and true or false
-        _G.GTLMODConfig.EspV2SnapLine = isEnabled and true or false
-        if _G.LexusConfig then _G.LexusConfig.Esp9_Line = isEnabled and true or false end
+        -- SNAP LINES only. Never touch EspBox or EspWeaponIcon.
+        local lineOn = (isEnabled == true)
+        _G.GTLMODConfig.Line = lineOn
+        _G.GTLMODConfig.EspLine = lineOn
+        _G.GTLMODConfig.EspV2SnapLine = lineOn
+        if _G.LexusConfig then _G.LexusConfig.Esp9_Line = lineOn end
+        pcall(function()
+            if type(_G.ClearVisionV2Sync) == "function" then _G.ClearVisionV2Sync() end
+        end)
+        -- do not write EspBox, Esp5, EspV2Enabled, EspWeaponIcon
     elseif configKey == "CounterEnabled" then
         _G.GTLMODConfig.CounterEnabled = isEnabled and true or false
         if not isEnabled then
@@ -10532,32 +10196,24 @@ local function UpdateFeature(configKey, isEnabled)
     elseif configKey == "ForceAimbotScope" then
         _G.GTLMODConfig.ForceAimbotScope = isEnabled and true or false
     elseif configKey == "EspWeaponIcon" then
-        -- fully independent of AUTO SETUP (EspBox)
-        local boxWasOn = (_G.GTLMODConfig.EspBox == true) or (_G.GTLMODConfig.EspV2Enabled == true) or (_G.GTLMODConfig.Esp5 == true)
-        _G.GTLMODConfig.EspWeaponIcon = isEnabled and true or false
+        -- WEAPON ICON strictly isolated
+        local wpnOn = (isEnabled == true)
+        _G.GTLMODConfig.EspWeaponIcon = wpnOn
         _G.LexusConfig = _G.LexusConfig or {}
-        _G.LexusConfig.Esp9_Weapon = isEnabled and true or false
-        if boxWasOn then
-            _G.GTLMODConfig.EspBox = true
-            _G.GTLMODConfig.Esp5 = true
-            _G.GTLMODConfig.EspV2Enabled = true
-            _G.GTLMODConfig.Box = true
-        end
-        if isEnabled then
-            _G.LexusConfig.EspLoai9 = true
+        _G.LexusConfig.Esp9_Weapon = wpnOn
+        -- recompute EspLoai9 from ALL features without changing any of them
+        local c = _G.GTLMODConfig
+        _G.LexusConfig.EspLoai9 = (c.EspBox == true) or (c.EspLine == true) or (c.EspWeaponIcon == true)
+            or (c.EspModelName == true) or (c.CounterEnabled == true) or (c.EspRadar == true) or false
+        if wpnOn then
+            -- only EnsureRunning — never Start() (Start resets canvas / redbox)
             pcall(function()
-                if _G.PlayerMapMarker then
-                    if _G.PlayerMapMarker.EnsureRunning then pcall(_G.PlayerMapMarker.EnsureRunning)
-                    elseif _G.PlayerMapMarker.Start and not _G.PlayerMapMarker.bActive then pcall(_G.PlayerMapMarker.Start) end
+                if _G.PlayerMapMarker and _G.PlayerMapMarker.EnsureRunning then
+                    pcall(_G.PlayerMapMarker.EnsureRunning)
                 end
             end)
         end
-        if boxWasOn then
-            pcall(function()
-                if type(_G.ClearVisionV2Start) == "function" then _G.ClearVisionV2Start() end
-                if type(_G.ClearVisionV2Sync) == "function" then _G.ClearVisionV2Sync() end
-            end)
-        end
+        -- do NOT call ClearVision, do NOT write EspBox/EspLine, do NOT Stop marker
         if _G.SaveModSettings then pcall(_G.SaveModSettings) end
         return
     elseif configKey == "WallhackSmart" then
@@ -10626,8 +10282,7 @@ local function UpdateFeature(configKey, isEnabled)
             pcall(function() if _G.ClearAllItemESPGlow then _G.ClearAllItemESPGlow() end end)
         end
     elseif configKey == "ModSkin" or configKey == "SkinDeadBox" or configKey == "SkinPet" or configKey == "SkinXSuit" then
-        -- skin system removed; keep flags false
-        _G.GTLMODConfig.ModSkin = false
+                _G.GTLMODConfig.ModSkin = false
         _G.GTLMODConfig.SkinDeadBox = false
         _G.GTLMODConfig.SkinPet = false
         _G.GTLMODConfig.SkinXSuit = false
@@ -10900,17 +10555,18 @@ local function DrawToggle(parent, x, y, configKey)
         RoundedPanel(root, knobX, 3, 20, 20, 10, C.KnobWhite, 14)
         RoundedPanel(root, knobX + 1, 4, 20, 20, 10, FLinearColor(0, 0, 0, 0.12), 13)
         MakeBtn(root, -6, -6, tw + 12, th + 12, 16, function()
-            local newState = not (_G.GTLMODConfig[configKey] and true or false)
+            local newState = not (_G.GTLMODConfig[configKey] == true)
             UpdateFeature(configKey, newState)
             if _G.SaveModSettings then pcall(_G.SaveModSettings) end
+            -- always read back the live flag so OFF stays OFF visually
+            local live = (_G.GTLMODConfig[configKey] == true)
             if configKey == "ForceAimbot" or configKey == "EspBox" or configKey == "EspWeaponIcon" or configKey == "EspLine" then
-                -- full refresh so conditional rows appear
                 if type(RenderContent) == "function" then
                     pcall(RenderContent)
                     return
                 end
             end
-            redraw(newState)
+            redraw(live)
         end)
     end
     redraw(_G.GTLMODConfig[configKey] == true)
@@ -11061,7 +10717,7 @@ local function MagooKeyTimeLeft()
             local base = "//storage/emulated/0/Android/data/" .. pkg .. "/files/"
             exp = tryRead(base .. "key_expiry.txt") or exp
             if not exp then
-                local raw = tryRead(base .. "keys.txt")
+                local raw = tryRead(base .. "key.txt")
                 if raw then exp = raw:match("\n([^\r\n]+)") or exp end
             end
             if exp and exp ~= "" then break end
@@ -11397,8 +11053,122 @@ local function UpdateLayoutPositions(vpW, vpH)
         pcall(function() bgSlot:SetPosition(FVector2D(posX, posY)) end)
     end
 end
+
+
+-- ========== MAGOO continuous menu glow (single instance, clipped inside menu) ==========
+_G._MagooMenuGlow = _G._MagooMenuGlow or { active = false, bars = {}, timer = nil, gen = 0, layer = nil }
+local function StopMenuGlow()
+    local g = _G._MagooMenuGlow
+    g.active = false
+    g.gen = (g.gen or 0) + 1   -- invalidate any running timer callbacks
+    g.timer = nil
+    -- remove bars first
+    for _, b in ipairs(g.bars or {}) do
+        pcall(function()
+            local w = b and b.widget
+            if w and slua.isValid(w) then w:RemoveFromParent() end
+        end)
+    end
+    g.bars = {}
+    -- remove clip layer
+    pcall(function()
+        if g.layer and slua.isValid(g.layer) then g.layer:RemoveFromParent() end
+    end)
+    g.layer = nil
+end
+local function StartMenuGlow(parent)
+    if not parent or not slua.isValid(parent) then return end
+    -- always full cleanup first so reopen never stacks
+    StopMenuGlow()
+    local g = _G._MagooMenuGlow
+    local myGen = (g.gen or 0) + 1
+    g.gen = myGen
+    g.active = true
+    g.bars = {}
+    pcall(function()
+        local LC = import("LinearColor")
+        if not LC then return end
+        local menuW = MENU_W or 640
+        local menuH = MENU_H or 411
+        -- dedicated layer sized exactly to the menu panel — bars live only here
+        local layer = NewObject("/Script/UMG.CanvasPanel", parent)
+        if not (layer and slua.isValid(layer)) then return end
+        local lslot = parent:AddChildToCanvas(layer)
+        if lslot then
+            lslot:SetAutoSize(false)
+            lslot:SetPosition(FVector2D(0, 0))
+            lslot:SetSize(FVector2D(menuW, menuH))
+            lslot:SetZOrder(9996)
+        end
+        SetVis(layer, "HitTestInvisible")
+        g.layer = layer
+        -- one soft white band + one soft black band, confined to [0, menuW]
+        local specs = {
+            { w = 70, a = 0.11, speed = 3.2, col = {1, 1, 1} },
+            { w = 50, a = 0.08, speed = 2.4, col = {0, 0, 0} },
+        }
+        for i, sp in ipairs(specs) do
+            local bar = CGame:NewObjectFromPath("/Script/UMG.Border", layer)
+            if bar and slua.isValid(bar) then
+                bar:SetBrushColor(LC(sp.col[1], sp.col[2], sp.col[3], sp.a))
+                bar:SetWidgetVisibility(UEnums.ESlateVisibility.HitTestInvisible)
+                local slot = layer:AddChildToCanvas(bar)
+                local startX = (i == 1) and 0 or math.floor(menuW * 0.45)
+                if slot then
+                    slot:SetAlignment(FVector2D(0, 0))
+                    slot:SetPosition(FVector2D(startX, 0))
+                    slot:SetSize(FVector2D(sp.w, menuH))
+                    slot:SetZOrder(1)
+                end
+                g.bars[#g.bars + 1] = {
+                    widget = bar, slot = slot, w = sp.w, speed = sp.speed,
+                    x = startX, a = sp.a, col = sp.col, dir = 1
+                }
+            end
+        end
+        local tk = package.loaded["common.time_ticker"] or require("common.time_ticker")
+        if not (tk and tk.AddTimerLoop) then return end
+        -- store gen in closure; ignore callbacks from old generations
+        g.timer = tk.AddTimerLoop(0, function()
+            if g.gen ~= myGen or not g.active or not isMenuOpen then
+                return
+            end
+            if not g.layer or not slua.isValid(g.layer) then
+                return
+            end
+            local mw = MENU_W or 640
+            for _, b in ipairs(g.bars) do
+                if b.slot and b.widget and slua.isValid(b.widget) then
+                    b.x = b.x + b.speed * b.dir
+                    -- bounce strictly inside [0, mw - w] so nothing draws outside the menu
+                    if b.x + b.w >= mw then
+                        b.x = mw - b.w
+                        b.dir = -1
+                        if b.col[1] > 0.5 then b.col = {0,0,0} else b.col = {1,1,1} end
+                        pcall(function()
+                            local LC2 = import("LinearColor")
+                            if LC2 then b.widget:SetBrushColor(LC2(b.col[1], b.col[2], b.col[3], b.a)) end
+                        end)
+                    elseif b.x <= 0 then
+                        b.x = 0
+                        b.dir = 1
+                        if b.col[1] > 0.5 then b.col = {0,0,0} else b.col = {1,1,1} end
+                        pcall(function()
+                            local LC2 = import("LinearColor")
+                            if LC2 then b.widget:SetBrushColor(LC2(b.col[1], b.col[2], b.col[3], b.a)) end
+                        end)
+                    end
+                    pcall(function() b.slot:SetPosition(FVector2D(b.x, 0)) end)
+                end
+            end
+        end, -1, 0.033)
+    end)
+end
+-- ========== end menu glow ==========
+
 local function CloseMenu()
     isMenuOpen = false
+    pcall(StopMenuGlow)
     pcall(function()
         if IsValid(bgPanel) then
             SetVis(bgPanel, "Collapsed")
@@ -11422,6 +11192,7 @@ local function OpenMenu(canvas)
         pcall(function()
             if bgPanel.SetRenderOpacity then bgPanel:SetRenderOpacity(1) end
         end)
+        pcall(function() StopMenuGlow() StartMenuGlow(bgPanel) end)
     else
         if c then BuildMenu(c) end
     end
@@ -11487,6 +11258,7 @@ function BuildMenu(canvas)
     MakeBtn(bgPanel, 570, 0, 70, 50, 10000, function() CloseMenu() end)
     if IsValid(floatContainer) then SetVis(floatContainer, "Collapsed") end
     isMenuOpen = true
+    pcall(function() if IsValid(bgPanel) then StopMenuGlow() StartMenuGlow(bgPanel) end end)
     if IsValid(topPillContainer) then SetVis(topPillContainer, "SelfHitTestInvisible") end
     pcall(function()
         if bgPanel and bgPanel.SetRenderOpacity then bgPanel:SetRenderOpacity(1) end
