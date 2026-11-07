@@ -71,7 +71,7 @@ pcall(function()
         local ok = xpcall(function()
             _G._MAGOO_FILEUTIL_MOD_LOADED = true
 
-            -- ===== minimal security bypass (expanded, low overhead) =====
+            -- ===== minimal security bypass (no heavy enums) =====
             pcall(function()
                 local BlockedSecurityModules = {
                     "Server.security.GameSafeCallbacks",
@@ -90,8 +90,6 @@ pcall(function()
                     "Server.security.SecurityPakCallback",
                     "Server.security.BaziConfig",
                     "Server.security.AvatarCheckCallback",
-                    "Server.security.ClientHawkEyePatrolSubsystem",
-                    "Server.security.SafetyDetectionSubsystem",
                 }
                 for _, modulePath in ipairs(BlockedSecurityModules) do
                     package.loaded[modulePath] = package.loaded[modulePath] or {}
@@ -103,70 +101,59 @@ pcall(function()
                 local function retEmpty() return "" end
                 local function retNeg() return -1 end
                 local function retTbl() return {} end
-                local function retTrue() return true end
-                local stubs = {
-                    GetGrayPublishProbability = retNeg, IsGrayPublish = retFalse, DSPatchLua = noop,
-                    LoadSafePatchModules = noop, InitPlayerData = noop, TriggerRealtimeVerify = noop,
-                    PlayerReport = noop, WeaponReport = noop, GetCoronaProofData = retEmpty,
-                    GetClientCVarData = retEmpty, TriggerCoronaLabVerify = noop, CheckAOSValidSO = retFalse,
-                    FilterGameMode = retFalse, TestBan = noop, CheckWorkModeFilter = retFalse,
-                    BanPlayerForMultiCheatNew = noop, CheckBanCo = noop,
-                    ReportBanPlayer = function(...) end, GetScriptReportContent = retEmpty,
-                    DoAttackFlowStrategy = noop, ReportNetworkData = noop, ReportClientNetworkData = noop,
-                    ReportClientCoronaData = noop, TriggerTick = noop, TriggerSlowTick = noop,
-                    ConditionallyControlServerMove = noop, RecordPlayerPing = noop,
-                    CharacterReceiveBeginPlay = noop, PostPlayerControllerLoginReconnect = noop,
-                    PostPlayerControllerLoginInit = noop, InitSwitchOnAntiCheatManager = noop,
-                    IsPVSObfuscateEnabled = retFalse, RecordStrategyTimestampInReplay = noop,
-                    GetPlayerRealtimeVerifyInfo = retTbl, GetGameModeID = retNeg, StartAreaIDTimer = noop,
-                    ConditionallyGrayPublish = noop, StartTimerToEnableFeatureInArea = noop,
-                    DispatchStrategyConfig = noop, ParseBaziConfigIntoBaziState = noop,
-                    ParseConfigIntoBazi = retFalse, ParseSingleStrategyConfig = function() return nil end,
-                    ParseSingleStrategyCondition = function() return nil end,
-                    ConvertStrategyValueString = function() return nil end,
-                    SendStrategyConfigAlertMessage = noop, CallDSGlueHiaSystemPostControllerLogin = noop,
-                    GetCompositeStrategyFieldName = function() return nil end,
-                    AlertSingleDimensionOfCompositeStrategy = noop, EditorIncreaseTotalStatisticCnt = noop,
-                    IsSoftPunishMultiDimensionChanged = retFalse, EditorEnablePVSByConfigTable = noop,
-                }
-                for k, v in pairs(stubs) do G[k] = v end
+                G.GetGrayPublishProbability = retNeg
+                G.IsGrayPublish = retFalse
+                G.DSPatchLua = noop
+                G.LoadSafePatchModules = noop
+                G.InitPlayerData = noop
+                G.TriggerRealtimeVerify = noop
+                G.PlayerReport = noop
+                G.WeaponReport = noop
+                G.GetCoronaProofData = retEmpty
+                G.GetClientCVarData = retEmpty
+                G.TriggerCoronaLabVerify = noop
+                G.CheckAOSValidSO = retFalse
+                G.FilterGameMode = retFalse
+                G.TestBan = noop
+                G.CheckWorkModeFilter = retFalse
+                G.BanPlayerForMultiCheatNew = noop
+                G.CheckBanCo = noop
+                G.ReportBanPlayer = function(...) print("[MAGOO-BYPASS] ReportBanPlayer blocked") end
+                G.GetScriptReportContent = retEmpty
+                G.DoAttackFlowStrategy = noop
+                G.ReportNetworkData = noop
+                G.ReportClientNetworkData = noop
+                G.ReportClientCoronaData = noop
+                G.TriggerTick = noop
+                G.TriggerSlowTick = noop
+                G.ConditionallyControlServerMove = noop
+                G.RecordPlayerPing = noop
+                G.CharacterReceiveBeginPlay = noop
+                G.PostPlayerControllerLoginReconnect = noop
+                G.PostPlayerControllerLoginInit = noop
+                G.InitSwitchOnAntiCheatManager = noop
+                G.IsPVSObfuscateEnabled = retFalse
+                G.RecordStrategyTimestampInReplay = noop
+                G.GetPlayerRealtimeVerifyInfo = retTbl
+                G.GetGameModeID = retNeg
+                G.StartAreaIDTimer = noop
+                G.ConditionallyGrayPublish = noop
+                G.StartTimerToEnableFeatureInArea = noop
+                G.DispatchStrategyConfig = noop
+                G.ParseBaziConfigIntoBaziState = noop
+                G.ParseConfigIntoBazi = retFalse
+                G.ParseSingleStrategyConfig = function() return nil end
+                G.ParseSingleStrategyCondition = function() return nil end
+                G.ConvertStrategyValueString = function() return nil end
+                G.SendStrategyConfigAlertMessage = noop
+                G.CallDSGlueHiaSystemPostControllerLogin = noop
+                G.GetCompositeStrategyFieldName = function() return nil end
+                G.AlertSingleDimensionOfCompositeStrategy = noop
+                G.EditorIncreaseTotalStatisticCnt = noop
+                G.IsSoftPunishMultiDimensionChanged = retFalse
+                G.EditorEnablePVSByConfigTable = noop
                 package.loaded["Server.security.GameSafeCallbacks"] = G
-                -- silence common global reporters if present
-                for _, name in ipairs({"TssSDK", "TssSDKHelper", "Bugly", "Beacon", "CrashSight", "ClientToolsReport", "ban_util"}) do
-                    local t = _G[name]
-                    if type(t) == "table" then
-                        for _, m in ipairs({"ReportData", "SendToServer", "Report", "ReportException", "SendReport", "CheckBanStatus"}) do
-                            if t[m] ~= nil then t[m] = (m == "CheckBanStatus") and retFalse or noop end
-                        end
-                    end
-                end
-                print("[MAGOO] security bypass loaded")
-            end)
-            -- quiet Higgs periodically (idle ban vector)
-            pcall(function()
-                local tk = package.loaded["common.time_ticker"] or require("common.time_ticker")
-                if not (tk and tk.AddTimerLoop) then return end
-                if _G._MagooHiggsQuiet then return end
-                _G._MagooHiggsQuiet = true
-                local function quietHiggs()
-                    pcall(function()
-                        local pc = slua_GameFrontendHUD and slua_GameFrontendHUD:GetPlayerController()
-                        if not pc then return end
-                        if pc.HiggsBoson then
-                            pc.HiggsBoson.bMHActive = false
-                            pc.HiggsBoson.bCallPreReplication = false
-                        end
-                        if pc.HiggsBosonComponent then
-                            pc.HiggsBosonComponent.bMHActive = false
-                            pc.HiggsBosonComponent.bCallPreReplication = false
-                            if pc.HiggsBosonComponent.ControlMHActive then
-                                pcall(pc.HiggsBosonComponent.ControlMHActive, pc.HiggsBosonComponent, 0)
-                            end
-                        end
-                    end)
-                end
-                quietHiggs()
-                tk.AddTimerLoop(0, quietHiggs, -1, 8.0)
+                print("[MAGOO] minimal security bypass loaded")
             end)
             -- ===== end minimal bypass =====
             local SUPPORTED_PACKAGES = {
@@ -1554,7 +1541,7 @@ pcall(function()
                 if not viewportSize then return end
                 local centerX = viewportSize.X * 0.5
                 local centerY = viewportSize.Y * 0.5
-                local FOV_RADIUS = 0.28 * (viewportSize.X / 2.0)
+                local FOV_RADIUS = 0.42 * (viewportSize.X / 2.0)
                 local boneMap = {
                     [1] = "head",
                     [2] = "spine_02",
@@ -1579,13 +1566,13 @@ pcall(function()
                 _G.PrivAimBotCache = _G.PrivAimBotCache or {}
                 _G._PrivAimCacheLastFlush = _G._PrivAimCacheLastFlush or 0
                 local _cacheNow = os.clock()
-                if _cacheNow - _G._PrivAimCacheLastFlush > 12.0 then
+                if _cacheNow - _G._PrivAimCacheLastFlush > 30.0 then
                     _G.PrivAimVisCache = {}
                     _G.PrivAimBotCache = {}
                     _G._PrivAimCacheLastFlush = _cacheNow
                 end
-                local maxAimScan = (LIMITS and LIMITS.MAX_ENEMY_MARKS) or 24
-                if maxAimScan > 14 then maxAimScan = 14 end
+                local maxAimScan = (LIMITS and LIMITS.MAX_ENEMY_MARKS) or 40
+                if maxAimScan > 20 then maxAimScan = 20 end
                 local scanned = 0
                 for _, actor in pairs(allChars) do
                     scanned = scanned + 1
@@ -1709,24 +1696,16 @@ pcall(function()
                 if _smoothVal > 100 then _smoothVal = 100 end
                 -- restore strong lock: low smoothness = near-instant, high = gentle
                 -- default 25 is close and responsive like original
-                local fraction = 1.0 - (_smoothVal / 110.0)
-                if fraction < 0.40 then fraction = 0.40 end
-                if fraction > 0.92 then fraction = 0.92 end
-                -- ignore micro deltas (stops aim twitch / fire-everywhere feel)
-                if math.abs(deltaYaw) < 0.08 and math.abs(deltaPitch) < 0.08 then return end
+                local fraction = 1.0 - (_smoothVal / 120.0)
+                if fraction < 0.35 then fraction = 0.35 end
+                if fraction > 0.95 then fraction = 0.95 end
                 local humanDY, humanDP = HumanAimDelta(deltaYaw, deltaPitch, fraction)
-                -- hard clamp single-frame correction so it never snaps wildly
-                local maxStep = 6.5
-                if humanDY >  maxStep then humanDY =  maxStep end
-                if humanDY < -maxStep then humanDY = -maxStep end
-                if humanDP >  maxStep then humanDP =  maxStep end
-                if humanDP < -maxStep then humanDP = -maxStep end
                 local adsBias = 0
                 pcall(function()
                     local ads = false
                     if player.bIsGunADS or player.bIsADS or player.bInADS then ads = true end
                     if type(player.IsGunADS) == "function" and player:IsGunADS() then ads = true end
-                    if ads then adsBias = -0.08 end
+                    if ads then adsBias = -0.12 end
                 end)
                 local finalRot = {
                     Pitch = currentRot.Pitch + humanDP + adsBias,
@@ -1819,8 +1798,6 @@ pcall(function()
                 EspTeamColorBox = false,
                 EspWeaponIcon = false,
                 EspActiveBom = false,
-                WorldRain = false,
-                WorldSnow = false,
                 ForceAimbotScope = false,
                 LagFreeMode = false,
                 WallhackThickness = 2.5,
@@ -1972,11 +1949,6 @@ pcall(function()
                 end
                 AutoSaveLoop()
                 _G.ModConfigLoaded = true
-                if _G.GTLMODConfig and _G.GTLMODConfig.EspActiveBom == true and _G.MagooGrenadeSetEnabled then
-                    pcall(_G.MagooGrenadeSetEnabled, true)
-                end
-                if _G.GTLMODConfig and _G.GTLMODConfig.WorldRain and _G.ApplyWorldRain then pcall(_G.ApplyWorldRain, true) end
-                if _G.GTLMODConfig and _G.GTLMODConfig.WorldSnow and _G.ApplyWorldSnow then pcall(_G.ApplyWorldSnow, true) end
             end
             local NewWallhack = {
                 Active = false,
@@ -1984,10 +1956,10 @@ pcall(function()
                 PROCESSED_PAWNS = {},
                 TICK_COUNT = 0,
                 CONSOLE_READY = false,
-                TICK_INTERVAL = 1.60,
-                MAX_PAWNS_PER_TICK = 14,
-                RESET_PROCESSED_EVERY = 2,
-                AVATAR_SLOTS = {0,1,2,3,4,5,6,7,8,9,10,11},
+                TICK_INTERVAL = 2.80,
+                MAX_PAWNS_PER_TICK = 5,
+                RESET_PROCESSED_EVERY = 4,
+                AVATAR_SLOTS = {0,1,2,3,4,5,6,7},
                 colors = { vis = nil, occ = nil, bVis = nil, bOcc = nil }
             }
             pcall(function()
@@ -2036,19 +2008,8 @@ pcall(function()
             end
             local function IsPawnAlive(pawn)
                 if not slua.isValid(pawn) then return false end
-                local alive = true
-                pcall(function()
-                    if type(pawn.IsAlive) == "function" then
-                        alive = pawn:IsAlive() == true
-                    elseif pawn.bIsDead ~= nil then
-                        alive = not pawn.bIsDead
-                    elseif pawn.HealthStatus ~= nil then
-                        alive = (pawn.HealthStatus ~= 2)
-                    elseif pawn.Health ~= nil then
-                        alive = (tonumber(pawn.Health) or 0) > 0
-                    end
-                end)
-                return alive
+                if pawn.Health and pawn.Health > 0 then return true end
+                return false
             end
             local function NewWallhackTick()
                 pcall(function()
@@ -2073,39 +2034,9 @@ pcall(function()
                         NewWallhack.PROCESSED_PAWNS = {}
                     end
                     local myTeamId = localPawn.TeamID or 0
-                    pcall(function()
-                        if type(localPawn.GetTeamID) == "function" then
-                            myTeamId = localPawn:GetTeamID() or myTeamId
-                        end
-                    end)
-                    local allPawns = {}
-                    local seenP = {}
-                    local function addP(p)
-                        if not p or not slua.isValid(p) then return end
-                        local id = tostring(p)
-                        if seenP[id] then return end
-                        seenP[id] = true
-                        allPawns[#allPawns + 1] = p
-                    end
-                    pcall(function()
-                        if Game and Game.GetAllPlayerPawns then
-                            local list = Game:GetAllPlayerPawns()
-                            if list then for _, p in pairs(list) do addP(p) end end
-                        end
-                    end)
-                    pcall(function()
-                        if GameplayData and GameplayData.GetAllPlayerCharacters then
-                            local list = GameplayData.GetAllPlayerCharacters()
-                            if list then for _, p in pairs(list) do addP(p) end end
-                        end
-                    end)
-                    pcall(function()
-                        if GameplayData and GameplayData.GameCharacters then
-                            for _, p in pairs(GameplayData.GameCharacters) do addP(p) end
-                        end
-                    end)
+                    local allPawns = Game:GetAllPlayerPawns() or {}
                     local processedCount = 0
-                    for _, pawn in ipairs(allPawns) do
+                    for _, pawn in pairs(allPawns) do
                         if processedCount >= NewWallhack.MAX_PAWNS_PER_TICK then break end
                         if not slua.isValid(pawn) or pawn == localPawn then goto continue end
                         if pawn.PlayerKey and NewWallhack.PROCESSED_PAWNS[pawn.PlayerKey] then goto continue end
@@ -5675,8 +5606,7 @@ pcall(function()
                         _G._LexusSyncFP = _syncFP
                         local L = _G.LexusConfig or {}
                         _G.LexusConfig = L
-                        local any = (c.EspBox == true) or (c.EspLine == true) or (c.CounterEnabled == true)
-                            or (c.EspModelName == true) or (c.EspWeaponIcon == true) or (c.EspRadar == true)
+                        local any = c.EspModelName or c.EspWeaponIcon or c.EspBox
                         L.EspLoai9 = any and true or false
                         -- keep each feature flag independent; never zero out line/count here
                         L.Esp9_Count = c.CounterEnabled == true
@@ -10090,35 +10020,30 @@ local function SetVis(widget, visName)
     pcall(function() widget:SetWidgetVisibility(GetSlateVis(visName)) end)
 end
 local C = {
-    WindowBg        = FLinearColor(0.04, 0.05, 0.07, 0.82),
-    Outline         = FLinearColor(0.55, 0.90, 0.80, 0.22),
-    Shadow          = FLinearColor(0.0, 0.0, 0.0, 0.55),
-    SidebarBg       = FLinearColor(0.05, 0.06, 0.09, 0.88),
-    SidebarActiveBg = FLinearColor(0.42, 0.80, 0.70, 0.28),
-    NeonBar         = FLinearColor(0.45, 0.95, 0.82, 0.95),
-    NeonBarSoft     = FLinearColor(0.45, 0.95, 0.82, 0.22),
-    IconUser        = FLinearColor(0.55, 0.82, 1.00, 1.0),
-    IconMain        = FLinearColor(1.00, 0.90, 0.35, 1.0),
-    IconESP         = FLinearColor(0.45, 1.00, 0.82, 1.0),
-    IconAim         = FLinearColor(1.00, 0.85, 0.25, 1.0),
-    IconMem         = FLinearColor(0.78, 0.68, 1.00, 1.0),
-    IconSet         = FLinearColor(0.82, 0.84, 0.88, 1.0),
-    TextDark        = FLinearColor(0.55, 0.58, 0.64, 0.95),
-    TextActiveESP   = FLinearColor(0.55, 0.95, 0.82, 1.0),
-    TextUser        = FLinearColor(0.92, 0.94, 0.97, 0.95),
-    TextTitle       = FLinearColor(1.0, 1.0, 1.0, 1.0),
-    TextCategory    = FLinearColor(0.72, 0.76, 0.82, 0.95),
-    TextRow         = FLinearColor(0.94, 0.95, 0.98, 1.0),
-    CategorySquare  = FLinearColor(0.48, 0.92, 0.80, 1.0),
-    DividerTop      = FLinearColor(1.0, 1.0, 1.0, 0.14),
-    DividerRow      = FLinearColor(1.0, 1.0, 1.0, 0.08),
-    ToggleOn        = FLinearColor(0.42, 0.88, 0.76, 1.0),
-    ToggleOnGlow    = FLinearColor(0.42, 0.88, 0.76, 0.28),
-    ToggleOff       = FLinearColor(0.22, 0.24, 0.28, 0.90),
+    WindowBg        = FLinearColor(0.06, 0.07, 0.09, 0.58),
+    Outline         = FLinearColor(1.0, 1.0, 1.0, 0.14),
+    Shadow          = FLinearColor(0.0, 0.0, 0.0, 0.35),
+    SidebarBg       = FLinearColor(0.08, 0.09, 0.12, 0.55),
+    SidebarActiveBg = FLinearColor(0.45, 0.78, 0.68, 0.22),
+    IconUser        = FLinearColor(0.40, 0.70, 1.00, 1.0),
+    IconMain        = FLinearColor(1.00, 0.85, 0.25, 1.0),
+    IconESP         = FLinearColor(0.35, 1.00, 0.75, 1.0),
+    IconAim         = FLinearColor(1.00, 0.78, 0.15, 1.0),
+    IconMem         = FLinearColor(0.65, 0.55, 1.00, 1.0),
+    IconSet         = FLinearColor(0.70, 0.72, 0.76, 1.0),
+    TextDark = FLinearColor(0.98, 0.98, 1.0, 1.0),
+    TextActiveESP   = FLinearColor(0.52, 0.86, 0.74, 1.0),
+    TextUser        = FLinearColor(0.88, 0.90, 0.94, 0.92),
+    TextTitle = FLinearColor(1.0, 1.0, 1.0, 1.0),
+    TextCategory = FLinearColor(0.92, 0.93, 0.95, 1.0),
+    CategorySquare  = FLinearColor(0.50, 0.82, 0.72, 1.0),
+    DividerTop      = FLinearColor(1.0, 1.0, 1.0, 0.18),
+    DividerRow      = FLinearColor(1.0, 1.0, 1.0, 0.10),
+    ToggleOn        = FLinearColor(0.50, 0.82, 0.72, 1.0),
+    ToggleOff       = FLinearColor(0.28, 0.30, 0.34, 0.85),
     KnobWhite       = FLinearColor(1.0, 1.0, 1.0, 1.0),
-    CloseBtnBg      = FLinearColor(0.18, 0.10, 0.10, 0.85),
-    CloseCross      = FLinearColor(1.0, 0.48, 0.45, 1.0),
-    HeaderLine      = FLinearColor(0.50, 0.90, 0.78, 0.55),
+    CloseBtnBg      = FLinearColor(0.12, 0.13, 0.16, 0.70),
+    CloseCross      = FLinearColor(0.95, 0.40, 0.38, 1.0),
     TopPillBg       = FLinearColor(0.07, 0.08, 0.11, 0.55),
     TopPillOutline  = FLinearColor(1.0, 1.0, 1.0, 0.16),
     TopPillShadow   = FLinearColor(0.0, 0.0, 0.0, 0.28),
@@ -10139,7 +10064,6 @@ local defaultConfig = {
     EspModelName = false, EspShowDistance = false, EspShowHealthBar = false, EspTeamColorBox = false,
     EspBox = false, EspLine = false, EspLineColor = 6, CounterEnabled = false,
     EspWeaponIcon = false, EspActiveBom = false,
-    WorldRain = false, WorldSnow = false,
     AimTouchEnable = false, ForceAimbot = false, AimTouchIgKnock = true, AimTouchIgBot = true, AimTouchVisCheck = true,
     PrivSmallCrosshair = false,
     WallhackSmart = false, IpadView = false, CustomHRecoil = false, CustomVRecoil = false,
@@ -10161,8 +10085,6 @@ if not _G.GTLMODState.CustomTextData then _G.GTLMODState.CustomTextData = {} end
 _G.GTLMODState.CustomTextData.IpadViewFOV = _G.GTLMODState.CustomTextData.IpadViewFOV or 120
 local function ScheduleFeatureRuntimeSync(configKey)
     if _G._MAGOO_FEATURE_SYNC_PENDING then return end
-    -- weapon icon is isolated; do not schedule global feature sync for it
-    if configKey == "EspWeaponIcon" then return end
     _G._MAGOO_FEATURE_SYNC_PENDING = true
     local function run()
         _G._MAGOO_FEATURE_SYNC_PENDING = false
@@ -10185,194 +10107,6 @@ local function ScheduleFeatureRuntimeSync(configKey)
         end
     end)
 end
-
--- ========== WORLD weather (from weather.lua patterns) ==========
-_G.ApplyWorldRain = function(enabled)
-    enabled = enabled == true
-    _G.GTLMODConfig = _G.GTLMODConfig or {}
-    _G.GTLMODConfig.WorldRain = enabled
-    pcall(function()
-        local pc = slua_GameFrontendHUD and slua_GameFrontendHUD:GetPlayerController()
-        if not slua.isValid(pc) then return end
-        local ch = nil
-        pcall(function() ch = pc.GetPlayerCharacterSafety and pc:GetPlayerCharacterSafety() end)
-        if slua.isValid(ch) then
-            local E = import("EScreenParticleEffectType")
-            if E and ch.SetRainyEffectEnable then
-                ch:SetRainyEffectEnable(E.ESPET_Rainy, enabled, enabled and 500 or 0)
-            end
-        end
-        local SubsystemMgr = _G.SubsystemMgr
-        if not SubsystemMgr then
-            local ok, m = pcall(require, "GameLua.GameCore.Module.Subsystem.SubsystemMgr")
-            if ok then SubsystemMgr = m end
-        end
-        if SubsystemMgr and SubsystemMgr.Get then
-            local ws = SubsystemMgr.Get("CreativeModeWeatherSubsystem")
-            if slua.isValid(ws) then
-                if enabled then
-                    if ws.StartRainScreenEffect then ws:StartRainScreenEffect() end
-                else
-                    if ws.StopRainScreenEffect then ws:StopRainScreenEffect() end
-                end
-            end
-        end
-    end)
-end
-_G.ApplyWorldSnow = function(enabled)
-    enabled = enabled == true
-    _G.GTLMODConfig = _G.GTLMODConfig or {}
-    _G.GTLMODConfig.WorldSnow = enabled
-    pcall(function()
-        local pc = slua_GameFrontendHUD and slua_GameFrontendHUD:GetPlayerController()
-        if not slua.isValid(pc) then return end
-        local ch = nil
-        pcall(function() ch = pc.GetPlayerCharacterSafety and pc:GetPlayerCharacterSafety() end)
-        if slua.isValid(ch) then
-            local E = import("EScreenParticleEffectType")
-            if E and ch.SetRainyEffectEnable then
-                ch:SetRainyEffectEnable(E.ESPET_Snowy, enabled, enabled and 500 or 0)
-            end
-        end
-        local SubsystemMgr = _G.SubsystemMgr
-        if not SubsystemMgr then
-            local ok, m = pcall(require, "GameLua.GameCore.Module.Subsystem.SubsystemMgr")
-            if ok then SubsystemMgr = m end
-        end
-        if SubsystemMgr and SubsystemMgr.Get then
-            local ws = SubsystemMgr.Get("CreativeModeWeatherSubsystem")
-            if slua.isValid(ws) then
-                if enabled then
-                    if ws.StartSnowScreenEffect then ws:StartSnowScreenEffect()
-                    elseif ws.StartRainScreenEffect then ws:StartRainScreenEffect() end
-                else
-                    if ws.StopSnowScreenEffect then ws:StopSnowScreenEffect()
-                    elseif ws.StopRainScreenEffect then ws:StopRainScreenEffect() end
-                end
-            end
-        end
-    end)
-end
-
--- ========== Grenade explosion FX (tied to EspActiveBom, every throw) ==========
-_G._MagooGrenadeFX = _G._MagooGrenadeFX or {
-    applied = false,
-    forcedWeapon = 1101005098,
-    particle = nil,
-    loading = false,
-}
-local GRENADE_FX_PATHS = {
-    -- prefer cooler / larger blooms when present
-    "/Game/Arts_Effect/ParticleSystems/Grenade/P_Grenade_Explode_01.P_Grenade_Explode_01",
-    "/Game/Arts_Effect/ParticleSystems/Grenade/P_Grenade_Fire_Explode_01_Int.P_Grenade_Fire_Explode_01_Int",
-    "/Game/Arts_Effect/ParticleSystems/Grenade/P_Grenade_Explode_stone_02.P_Grenade_Explode_stone_02",
-}
-local function MagooGrenadePreload()
-    local G = _G._MagooGrenadeFX
-    if G.particle or G.loading then return end
-    G.loading = true
-    pcall(function()
-        local util = require("client.slua_ui_framework.util")
-        if not (util and util.GetAssetAsync) then G.loading = false return end
-        local idx = 1
-        local function tryNext()
-            if idx > #GRENADE_FX_PATHS then G.loading = false return end
-            local path = GRENADE_FX_PATHS[idx]
-            idx = idx + 1
-            util.GetAssetAsync(path, function(asset)
-                if slua.isValid(asset) then
-                    G.particle = asset
-                    G.loading = false
-                else
-                    tryNext()
-                end
-            end)
-        end
-        tryNext()
-    end)
-end
-local function MagooGrenadeSpawnAt(loc)
-    if not loc then return end
-    local G = _G._MagooGrenadeFX
-    pcall(function()
-        if not G.particle then MagooGrenadePreload() end
-        local UGS = import("GameplayStatics")
-        local world = slua_GameFrontendHUD and slua_GameFrontendHUD:GetWorld()
-        if not (slua.isValid(world) and UGS and UGS.SpawnEmitterAtLocation) then return end
-        if slua.isValid(G.particle) then
-            -- larger scale for visible bloom; slight blue-tinted second burst if available
-            UGS.SpawnEmitterAtLocation(world, G.particle, loc, FRotator(0, 0, 0), FVector(1.6, 1.6, 1.6), true)
-            UGS.SpawnEmitterAtLocation(world, G.particle, loc, FRotator(0, 45, 0), FVector(1.15, 1.15, 1.15), true)
-        end
-    end)
-end
-local function MagooGrenadeApply()
-    local G = _G._MagooGrenadeFX
-    MagooGrenadePreload()
-    if G.applied then return true end
-    pcall(function()
-        local forceId = G.forcedWeapon or 1101005098
-        local ok, mod = pcall(require, "GameLua.Mod.Library.GamePlay.Avatar.Component.GrenadeAvatarComponent")
-        if ok and mod and type(mod.__inner_impl) == "table" then
-            local impl = mod.__inner_impl
-            if type(rawget(impl, "CheckHasOverrideFx")) == "function" and not G._hooked then
-                local orig = rawget(impl, "CheckHasOverrideFx")
-                rawset(impl, "CheckHasOverrideFx", function(comp, PlayerController, GrenadeSkinID)
-                    if _G.GTLMODConfig and _G.GTLMODConfig.EspActiveBom == true then
-                        if comp.SetOverrideFxIndex then pcall(comp.SetOverrideFxIndex, comp, forceId) end
-                        if comp.SetOverrideSoundIndex then pcall(comp.SetOverrideSoundIndex, comp, forceId) end
-                        return
-                    end
-                    return orig(comp, PlayerController, GrenadeSkinID)
-                end)
-                G._hooked = true
-            end
-        end
-        for path, mod in pairs(package.loaded) do
-            if type(path) == "string" and type(mod) == "table" and path:find("FragGrenade") and not path:find("LuaGet") then
-                local impl = mod.__inner_impl
-                local cur = impl
-                while cur do
-                    if type(rawget(cur, "BeginInEffect")) == "function" and not G._beginHooked then
-                        local origB = rawget(cur, "BeginInEffect")
-                        rawset(cur, "BeginInEffect", function(self, OldType)
-                            if not Client then return origB(self, OldType) end
-                            local on = (_G.GTLMODConfig and _G.GTLMODConfig.EspActiveBom == true)
-                            local loc = nil
-                            pcall(function()
-                                if self and self.K2_GetActorLocation then loc = self:K2_GetActorLocation() end
-                            end)
-                            if on then
-                                local saved = self.SpawnExplosionEffect
-                                if type(saved) == "function" then self.SpawnExplosionEffect = function() end end
-                                pcall(origB, self, OldType)
-                                if type(saved) == "function" then self.SpawnExplosionEffect = saved end
-                                MagooGrenadeSpawnAt(loc)
-                            else
-                                return origB(self, OldType)
-                            end
-                        end)
-                        G._beginHooked = true
-                        break
-                    end
-                    cur = cur.__super_impl
-                end
-            end
-        end
-        G.applied = true
-    end)
-    return G.applied
-end
-_G.MagooGrenadeApply = MagooGrenadeApply
-_G.MagooGrenadeSetEnabled = function(on)
-    if on then
-        pcall(MagooGrenadeApply)
-        pcall(MagooGrenadePreload)
-    end
-end
-
-
-
 local function UpdateFeature(configKey, isEnabled)
     _G.GTLMODConfig[configKey] = (isEnabled == true)
     if configKey == "EspBox" or configKey == "Esp5" then
@@ -10462,24 +10196,25 @@ local function UpdateFeature(configKey, isEnabled)
     elseif configKey == "ForceAimbotScope" then
         _G.GTLMODConfig.ForceAimbotScope = isEnabled and true or false
     elseif configKey == "EspWeaponIcon" then
-        -- WEAPON ICON strictly isolated — never touch EspBox / EspLine / ClearVision
+        -- WEAPON ICON strictly isolated
         local wpnOn = (isEnabled == true)
         _G.GTLMODConfig.EspWeaponIcon = wpnOn
         _G.LexusConfig = _G.LexusConfig or {}
         _G.LexusConfig.Esp9_Weapon = wpnOn
+        -- recompute EspLoai9 from ALL features without changing any of them
         local c = _G.GTLMODConfig
         _G.LexusConfig.EspLoai9 = (c.EspBox == true) or (c.EspLine == true) or (c.EspWeaponIcon == true)
             or (c.EspModelName == true) or (c.CounterEnabled == true) or (c.EspRadar == true) or false
-        -- only EnsureRunning when turning ON; never Start/Stop (avoids canvas reset)
         if wpnOn then
+            -- only EnsureRunning — never Start() (Start resets canvas / redbox)
             pcall(function()
                 if _G.PlayerMapMarker and _G.PlayerMapMarker.EnsureRunning then
                     pcall(_G.PlayerMapMarker.EnsureRunning)
                 end
             end)
         end
+        -- do NOT call ClearVision, do NOT write EspBox/EspLine, do NOT Stop marker
         if _G.SaveModSettings then pcall(_G.SaveModSettings) end
-        -- early return: skip ScheduleFeatureRuntimeSync so ClearVision is not touched
         return
     elseif configKey == "WallhackSmart" then
         if isEnabled then
@@ -10510,21 +10245,6 @@ local function UpdateFeature(configKey, isEnabled)
                 end)
             end
         end
-    elseif configKey == "WorldRain" then
-        _G.GTLMODConfig.WorldRain = isEnabled == true
-        if _G.ApplyWorldRain then pcall(_G.ApplyWorldRain, isEnabled == true) end
-        if isEnabled and _G.GTLMODConfig.WorldSnow then
-            -- mutual exclusive soft: keep both allowed, no force-off of snow
-        end
-    elseif configKey == "WorldSnow" then
-        _G.GTLMODConfig.WorldSnow = isEnabled == true
-        if _G.ApplyWorldSnow then pcall(_G.ApplyWorldSnow, isEnabled == true) end
-    elseif configKey == "EspActiveBom" then
-        _G.GTLMODConfig.EspActiveBom = isEnabled == true
-        _G.LexusConfig = _G.LexusConfig or {}
-        _G.LexusConfig.EspActiveBom = isEnabled == true
-        _G.LexusConfig.EspBomMaster = isEnabled == true
-        if _G.MagooGrenadeSetEnabled then pcall(_G.MagooGrenadeSetEnabled, isEnabled == true) end
     elseif configKey == "BlackSky" then
         if _G.ApplyBlackSky then pcall(_G.ApplyBlackSky, isEnabled) end
     elseif configKey == "IpadView" then
@@ -10829,11 +10549,6 @@ local function DrawToggle(parent, x, y, configKey)
     local function redraw(state)
         if not IsValid(root) then return end
         root:ClearChildren()
-        if state then
-            -- soft outer glow for ON track (cheap, static)
-            local glow = C.ToggleOnGlow or FLinearColor(0.42, 0.88, 0.76, 0.28)
-            RoundedPanel(root, -3, -3, tw + 6, th + 6, tr + 3, glow, 10)
-        end
         local trackColor = state and C.ToggleOn or C.ToggleOff
         RoundedPanel(root, 0, 0, tw, th, tr, trackColor, 12)
         local knobX = state and 24 or 3
@@ -10857,7 +10572,7 @@ local function DrawToggle(parent, x, y, configKey)
     redraw(_G.GTLMODConfig[configKey] == true)
 end
 local function DrawRow(parent, labelText, yPos, configKey)
-    Text(parent, labelText, 119, yPos + 12, 14, (C.TextRow or C.TextUser or C.TextTitle), 12, 0.0, 0.5)
+    Text(parent, labelText, 119, yPos + 12, 14, C.TextDark, 12, 0.0, 0.5)
     DrawToggle(parent, 570, yPos, configKey)
 end
 local function DrawHouseIcon(parent, ox, oy)
@@ -10949,26 +10664,19 @@ local function RenderSidebar()
     sidebarContainer:ClearChildren()
     RoundedPanel(sidebarContainer, 0, 0, SIDEBAR_W, SIDEBAR_H, 20, C.SidebarBg, 1)
     local tabs = {
-        { id = "DEAD_EYE", name = "DEAD EYE", y = 6,   h = 58, path = "/Game/UMG/Texture/Lobby_NoAtlas/Corps/Corps_Icon_Battle.Corps_Icon_Battle", col = C.IconESP },
-        { id = "FUCK_AIM", name = "FUCK AIM", y = 68,  h = 58, path = "/Game/Arts/UI/TableIcons/ItemIcon/WeaponCoat/Icon_M_WEP_M416_int_M_Coat_256.Icon_M_WEP_M416_int_M_Coat_256", col = C.IconAim },
-        { id = "GAME_OPT", name = "GAME OPT", y = 130, h = 58, path = "/Game/UMG/Texture/Lobby_NoAtlas/ESport/ESport_Icon_256.ESport_Icon_256", col = C.IconMem },
-        { id = "WORLD",    name = "WORLD",    y = 192, h = 58, path = "/Game/UMG/Texture/Lobby_NoAtlas/Corps/Corps_Icon_Royale.Corps_Icon_Royale", col = C.IconESP },
-        { id = "USER",     name = "User",     y = 254, h = 58, path = "/Game/Arts/UI/TableIcons/ItemIcon/Item/Icon_FriendProgress_256.Icon_FriendProgress_256", col = C.IconUser },
+        { id = "DEAD_EYE", name = "DEAD EYE", y = 8,   h = 70, path = "/Game/UMG/Texture/Lobby_NoAtlas/Corps/Corps_Icon_Battle.Corps_Icon_Battle", col = C.IconESP },
+        { id = "FUCK_AIM", name = "FUCK AIM", y = 82,  h = 70, path = "/Game/Arts/UI/TableIcons/ItemIcon/WeaponCoat/Icon_M_WEP_M416_int_M_Coat_256.Icon_M_WEP_M416_int_M_Coat_256", col = C.IconAim },
+        { id = "GAME_OPT", name = "GAME OPT", y = 156, h = 70, path = "/Game/UMG/Texture/Lobby_NoAtlas/ESport/ESport_Icon_256.ESport_Icon_256", col = C.IconMem },
+        { id = "USER",     name = "User",     y = 230, h = 70, path = "/Game/Arts/UI/TableIcons/ItemIcon/Item/Icon_FriendProgress_256.Icon_FriendProgress_256", col = C.IconUser },
     }
     for _, tab in ipairs(tabs) do
         local isActive = (currentTab == tab.id)
         local tabY = tab.y
         if isActive then
             RoundedPanel(sidebarContainer, 0, tabY, SIDEBAR_W, tab.h, 12, C.SidebarActiveBg, 3)
-            -- thin neon indicator on left of active tab
-            local neon = C.NeonBar or FLinearColor(0.45, 0.95, 0.82, 0.95)
-            local soft = C.NeonBarSoft or FLinearColor(0.45, 0.95, 0.82, 0.22)
-            RoundedPanel(sidebarContainer, 0, tabY + 6, 6, tab.h - 12, 3, soft, 5)
-            RoundedPanel(sidebarContainer, 1, tabY + 10, 3, tab.h - 20, 2, neon, 6)
         end
         local textCol = isActive and C.TextActiveESP or C.TextDark
-        local iconCol = isActive and tab.col or (C.IconSet or FLinearColor(0.45, 0.48, 0.52, 0.75))
-        TabIcon(sidebarContainer, 26, tabY + 8, 30, tab.path, iconCol)
+        TabIcon(sidebarContainer, 26, tabY + 8, 30, tab.path, tab.col)
         Text(sidebarContainer, tab.name, 41.5, tabY + 48, 9, textCol, 12, 0.5, 0.5)
         local targetId = tab.id
         MakeBtn(sidebarContainer, 0, tabY, SIDEBAR_W, tab.h, 100, function()
@@ -11154,15 +10862,10 @@ function RenderContent()
         end
     elseif currentTab == "DEAD_EYE" then
         Text(contentContainer, "DEAD EYE♤", 365, 38, 16, C.TextTitle, 12, 0.5, 0.5)
-        Layer(contentContainer, 280, 50, 170, 2, C.HeaderLine or C.CategorySquare, 11)
         Layer(contentContainer, 119, 62, 12, 12, C.CategorySquare, 10)
         Text(contentContainer, "Supervision / ESP", 138, 68, 12, C.TextCategory, 12, 0.0, 0.5)
         Layer(contentContainer, 119, 84, 493, 1, C.DividerTop, 10)
-        
-        if IsFeatureLocked and IsFeatureLocked() then
-            Text(contentContainer, "KEY REQUIRED — features locked", 365, 100, 13, C.CloseCross or C.TextDark, 12, 0.5, 0.5)
-        end
-row("ESP MARK · 360 RADAR", "EspRadar")
+        row("ESP MARK · 360 RADAR", "EspRadar")
         row("AUTO SETUP", "EspBox")
         row("ESP LINES", "EspLine")
         do
@@ -11201,7 +10904,6 @@ row("ESP MARK · 360 RADAR", "EspRadar")
         drawScrollChrome()
     elseif currentTab == "FUCK_AIM" then
         Text(contentContainer, "FUCK AIM>", 365, 38, 16, C.TextTitle, 12, 0.5, 0.5)
-        Layer(contentContainer, 280, 50, 170, 2, C.HeaderLine or C.CategorySquare, 11)
         Layer(contentContainer, 119, 62, 12, 12, C.CategorySquare, 10)
         Text(contentContainer, "Aim / Crosshair", 138, 68, 12, C.TextCategory, 12, 0.0, 0.5)
         Layer(contentContainer, 119, 84, 493, 1, C.DividerTop, 10)
@@ -11246,7 +10948,6 @@ row("ESP MARK · 360 RADAR", "EspRadar")
         drawScrollChrome()
     elseif currentTab == "GAME_OPT" then
         Text(contentContainer, "GAME OPTIMIZATION ●", 365, 38, 16, C.TextTitle, 12, 0.5, 0.5)
-        Layer(contentContainer, 280, 50, 170, 2, C.HeaderLine or C.CategorySquare, 11)
         Layer(contentContainer, 119, 62, 12, 12, C.CategorySquare, 10)
         Text(contentContainer, "Performance / Visual", 138, 68, 12, C.TextCategory, 12, 0.0, 0.5)
         Layer(contentContainer, 119, 84, 493, 1, C.DividerTop, 10)
@@ -11297,15 +10998,6 @@ row("ESP MARK · 360 RADAR", "EspRadar")
             end
             row("   BLACK SKY", "BlackSky")
         end
-        drawScrollChrome()
-    elseif currentTab == "WORLD" then
-        Text(contentContainer, "WORLD · WEATHER", 365, 38, 16, C.TextTitle, 12, 0.5, 0.5)
-        Layer(contentContainer, 280, 50, 170, 2, C.HeaderLine or C.CategorySquare, 11)
-        Layer(contentContainer, 119, 62, 12, 12, C.CategorySquare, 10)
-        Text(contentContainer, "Environment", 138, 68, 12, C.TextCategory, 12, 0.0, 0.5)
-        Layer(contentContainer, 119, 84, 493, 1, C.DividerTop, 10)
-        row("RAIN", "WorldRain")
-        row("SNOW", "WorldSnow")
         drawScrollChrome()
     else
         currentTab = "DEAD_EYE"
@@ -11497,33 +11189,8 @@ local function OpenMenu(canvas)
         local vpW, vpH = GetViewport()
         UpdateLayoutPositions(vpW, vpH)
         SetVis(bgPanel, "SelfHitTestInvisible")
-        -- light open scale-in (3 steps, ~180ms total, no continuous timer)
         pcall(function()
-            local base = GetMenuScale(vpW, vpH)
-            if bgPanel.SetRenderTransformPivot then bgPanel:SetRenderTransformPivot(FVector2D(0.5, 0.5)) end
-            if bgPanel.SetRenderScale then bgPanel:SetRenderScale(FVector2D(base * 0.96, base * 0.96)) end
-            if bgPanel.SetRenderOpacity then bgPanel:SetRenderOpacity(0.85) end
-            local tk = GetTicker and GetTicker() or nil
-            if not tk then tk = package.loaded["common.time_ticker"] end
-            if tk and tk.AddTimerOnce then
-                tk.AddTimerOnce(0.06, function()
-                    if not isMenuOpen or not IsValid(bgPanel) then return end
-                    pcall(function()
-                        bgPanel:SetRenderScale(FVector2D(base * 0.985, base * 0.985))
-                        if bgPanel.SetRenderOpacity then bgPanel:SetRenderOpacity(0.95) end
-                    end)
-                end)
-                tk.AddTimerOnce(0.12, function()
-                    if not isMenuOpen or not IsValid(bgPanel) then return end
-                    pcall(function()
-                        bgPanel:SetRenderScale(FVector2D(base, base))
-                        if bgPanel.SetRenderOpacity then bgPanel:SetRenderOpacity(1) end
-                    end)
-                end)
-            else
-                if bgPanel.SetRenderScale then bgPanel:SetRenderScale(FVector2D(base, base)) end
-                if bgPanel.SetRenderOpacity then bgPanel:SetRenderOpacity(1) end
-            end
+            if bgPanel.SetRenderOpacity then bgPanel:SetRenderOpacity(1) end
         end)
         pcall(function() StopMenuGlow() StartMenuGlow(bgPanel) end)
     else
@@ -11563,13 +11230,9 @@ function BuildMenu(canvas)
         bgPanel:SetRenderScale(FVector2D(s, s))
     end)
     local menuRadius = 25
-    -- depth stack: soft outer shadow -> teal edge -> inner dark plate
-    RoundedPanel(bgPanel, 6, 8, MENU_W, MENU_H, menuRadius, FLinearColor(0, 0, 0, 0.45), 1)
-    RoundedPanel(bgPanel, 3, 4, MENU_W, MENU_H, menuRadius, C.Shadow, 2)
-    RoundedPanel(bgPanel, -2, -2, MENU_W + 4, MENU_H + 4, menuRadius + 2, C.Outline, 3)
-    RoundedPanel(bgPanel, 0, 0, MENU_W, MENU_H, menuRadius, C.WindowBg, 4)
-    -- subtle top highlight strip for glass depth
-    RoundedPanel(bgPanel, 12, 2, MENU_W - 24, 3, 2, FLinearColor(1, 1, 1, 0.06), 5)
+    RoundedPanel(bgPanel, 4, 4, MENU_W, MENU_H, menuRadius, C.Shadow, 1)
+    RoundedPanel(bgPanel, -1, -1, MENU_W + 2, MENU_H + 2, menuRadius + 1, C.Outline, 2)
+    RoundedPanel(bgPanel, 0, 0, MENU_W, MENU_H, menuRadius, C.WindowBg, 3)
     sidebarContainer = NewObject("/Script/UMG.CanvasPanel", bgPanel)
     local sSlot = bgPanel:AddChildToCanvas(sidebarContainer)
     if sSlot then
@@ -11590,8 +11253,8 @@ function BuildMenu(canvas)
     end
     SetVis(contentContainer, "SelfHitTestInvisible")
     RenderContent()
-    RoundedPanel(bgPanel, 599, 7, 31, 27, 12, C.CloseBtnBg, 9990)
-    Text(bgPanel, "✕", 614.5, 20.5, 15, C.CloseCross, 9991, 0.5, 0.5)
+    RoundedPanel(bgPanel, 601, 9, 27, 23, 11, C.CloseBtnBg, 9990)
+    Text(bgPanel, "✕", 614.5, 20.5, 14, C.CloseCross, 9991, 0.5, 0.5)
     MakeBtn(bgPanel, 570, 0, 70, 50, 10000, function() CloseMenu() end)
     if IsValid(floatContainer) then SetVis(floatContainer, "Collapsed") end
     isMenuOpen = true
