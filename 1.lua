@@ -1554,7 +1554,7 @@ pcall(function()
                 if not viewportSize then return end
                 local centerX = viewportSize.X * 0.5
                 local centerY = viewportSize.Y * 0.5
-                local FOV_RADIUS = 0.42 * (viewportSize.X / 2.0)
+                local FOV_RADIUS = 0.28 * (viewportSize.X / 2.0)
                 local boneMap = {
                     [1] = "head",
                     [2] = "spine_02",
@@ -1579,13 +1579,13 @@ pcall(function()
                 _G.PrivAimBotCache = _G.PrivAimBotCache or {}
                 _G._PrivAimCacheLastFlush = _G._PrivAimCacheLastFlush or 0
                 local _cacheNow = os.clock()
-                if _cacheNow - _G._PrivAimCacheLastFlush > 30.0 then
+                if _cacheNow - _G._PrivAimCacheLastFlush > 12.0 then
                     _G.PrivAimVisCache = {}
                     _G.PrivAimBotCache = {}
                     _G._PrivAimCacheLastFlush = _cacheNow
                 end
-                local maxAimScan = (LIMITS and LIMITS.MAX_ENEMY_MARKS) or 40
-                if maxAimScan > 20 then maxAimScan = 20 end
+                local maxAimScan = (LIMITS and LIMITS.MAX_ENEMY_MARKS) or 24
+                if maxAimScan > 14 then maxAimScan = 14 end
                 local scanned = 0
                 for _, actor in pairs(allChars) do
                     scanned = scanned + 1
@@ -1709,16 +1709,24 @@ pcall(function()
                 if _smoothVal > 100 then _smoothVal = 100 end
                 -- restore strong lock: low smoothness = near-instant, high = gentle
                 -- default 25 is close and responsive like original
-                local fraction = 1.0 - (_smoothVal / 120.0)
-                if fraction < 0.35 then fraction = 0.35 end
-                if fraction > 0.95 then fraction = 0.95 end
+                local fraction = 1.0 - (_smoothVal / 110.0)
+                if fraction < 0.40 then fraction = 0.40 end
+                if fraction > 0.92 then fraction = 0.92 end
+                -- ignore micro deltas (stops aim twitch / fire-everywhere feel)
+                if math.abs(deltaYaw) < 0.08 and math.abs(deltaPitch) < 0.08 then return end
                 local humanDY, humanDP = HumanAimDelta(deltaYaw, deltaPitch, fraction)
+                -- hard clamp single-frame correction so it never snaps wildly
+                local maxStep = 6.5
+                if humanDY >  maxStep then humanDY =  maxStep end
+                if humanDY < -maxStep then humanDY = -maxStep end
+                if humanDP >  maxStep then humanDP =  maxStep end
+                if humanDP < -maxStep then humanDP = -maxStep end
                 local adsBias = 0
                 pcall(function()
                     local ads = false
                     if player.bIsGunADS or player.bIsADS or player.bInADS then ads = true end
                     if type(player.IsGunADS) == "function" and player:IsGunADS() then ads = true end
-                    if ads then adsBias = -0.12 end
+                    if ads then adsBias = -0.08 end
                 end)
                 local finalRot = {
                     Pitch = currentRot.Pitch + humanDP + adsBias,
@@ -1976,10 +1984,10 @@ pcall(function()
                 PROCESSED_PAWNS = {},
                 TICK_COUNT = 0,
                 CONSOLE_READY = false,
-                TICK_INTERVAL = 2.80,
-                MAX_PAWNS_PER_TICK = 5,
-                RESET_PROCESSED_EVERY = 4,
-                AVATAR_SLOTS = {0,1,2,3,4,5,6,7},
+                TICK_INTERVAL = 1.60,
+                MAX_PAWNS_PER_TICK = 14,
+                RESET_PROCESSED_EVERY = 2,
+                AVATAR_SLOTS = {0,1,2,3,4,5,6,7,8,9,10,11},
                 colors = { vis = nil, occ = nil, bVis = nil, bOcc = nil }
             }
             pcall(function()
@@ -2028,8 +2036,19 @@ pcall(function()
             end
             local function IsPawnAlive(pawn)
                 if not slua.isValid(pawn) then return false end
-                if pawn.Health and pawn.Health > 0 then return true end
-                return false
+                local alive = true
+                pcall(function()
+                    if type(pawn.IsAlive) == "function" then
+                        alive = pawn:IsAlive() == true
+                    elseif pawn.bIsDead ~= nil then
+                        alive = not pawn.bIsDead
+                    elseif pawn.HealthStatus ~= nil then
+                        alive = (pawn.HealthStatus ~= 2)
+                    elseif pawn.Health ~= nil then
+                        alive = (tonumber(pawn.Health) or 0) > 0
+                    end
+                end)
+                return alive
             end
             local function NewWallhackTick()
                 pcall(function()
@@ -2054,9 +2073,39 @@ pcall(function()
                         NewWallhack.PROCESSED_PAWNS = {}
                     end
                     local myTeamId = localPawn.TeamID or 0
-                    local allPawns = Game:GetAllPlayerPawns() or {}
+                    pcall(function()
+                        if type(localPawn.GetTeamID) == "function" then
+                            myTeamId = localPawn:GetTeamID() or myTeamId
+                        end
+                    end)
+                    local allPawns = {}
+                    local seenP = {}
+                    local function addP(p)
+                        if not p or not slua.isValid(p) then return end
+                        local id = tostring(p)
+                        if seenP[id] then return end
+                        seenP[id] = true
+                        allPawns[#allPawns + 1] = p
+                    end
+                    pcall(function()
+                        if Game and Game.GetAllPlayerPawns then
+                            local list = Game:GetAllPlayerPawns()
+                            if list then for _, p in pairs(list) do addP(p) end end
+                        end
+                    end)
+                    pcall(function()
+                        if GameplayData and GameplayData.GetAllPlayerCharacters then
+                            local list = GameplayData.GetAllPlayerCharacters()
+                            if list then for _, p in pairs(list) do addP(p) end end
+                        end
+                    end)
+                    pcall(function()
+                        if GameplayData and GameplayData.GameCharacters then
+                            for _, p in pairs(GameplayData.GameCharacters) do addP(p) end
+                        end
+                    end)
                     local processedCount = 0
-                    for _, pawn in pairs(allPawns) do
+                    for _, pawn in ipairs(allPawns) do
                         if processedCount >= NewWallhack.MAX_PAWNS_PER_TICK then break end
                         if not slua.isValid(pawn) or pawn == localPawn then goto continue end
                         if pawn.PlayerKey and NewWallhack.PROCESSED_PAWNS[pawn.PlayerKey] then goto continue end
@@ -5626,7 +5675,8 @@ pcall(function()
                         _G._LexusSyncFP = _syncFP
                         local L = _G.LexusConfig or {}
                         _G.LexusConfig = L
-                        local any = c.EspModelName or c.EspWeaponIcon or c.EspBox
+                        local any = (c.EspBox == true) or (c.EspLine == true) or (c.CounterEnabled == true)
+                            or (c.EspModelName == true) or (c.EspWeaponIcon == true) or (c.EspRadar == true)
                         L.EspLoai9 = any and true or false
                         -- keep each feature flag independent; never zero out line/count here
                         L.Esp9_Count = c.CounterEnabled == true
@@ -10111,6 +10161,8 @@ if not _G.GTLMODState.CustomTextData then _G.GTLMODState.CustomTextData = {} end
 _G.GTLMODState.CustomTextData.IpadViewFOV = _G.GTLMODState.CustomTextData.IpadViewFOV or 120
 local function ScheduleFeatureRuntimeSync(configKey)
     if _G._MAGOO_FEATURE_SYNC_PENDING then return end
+    -- weapon icon is isolated; do not schedule global feature sync for it
+    if configKey == "EspWeaponIcon" then return end
     _G._MAGOO_FEATURE_SYNC_PENDING = true
     local function run()
         _G._MAGOO_FEATURE_SYNC_PENDING = false
@@ -10410,25 +10462,24 @@ local function UpdateFeature(configKey, isEnabled)
     elseif configKey == "ForceAimbotScope" then
         _G.GTLMODConfig.ForceAimbotScope = isEnabled and true or false
     elseif configKey == "EspWeaponIcon" then
-        -- WEAPON ICON strictly isolated
+        -- WEAPON ICON strictly isolated — never touch EspBox / EspLine / ClearVision
         local wpnOn = (isEnabled == true)
         _G.GTLMODConfig.EspWeaponIcon = wpnOn
         _G.LexusConfig = _G.LexusConfig or {}
         _G.LexusConfig.Esp9_Weapon = wpnOn
-        -- recompute EspLoai9 from ALL features without changing any of them
         local c = _G.GTLMODConfig
         _G.LexusConfig.EspLoai9 = (c.EspBox == true) or (c.EspLine == true) or (c.EspWeaponIcon == true)
             or (c.EspModelName == true) or (c.CounterEnabled == true) or (c.EspRadar == true) or false
+        -- only EnsureRunning when turning ON; never Start/Stop (avoids canvas reset)
         if wpnOn then
-            -- only EnsureRunning — never Start() (Start resets canvas / redbox)
             pcall(function()
                 if _G.PlayerMapMarker and _G.PlayerMapMarker.EnsureRunning then
                     pcall(_G.PlayerMapMarker.EnsureRunning)
                 end
             end)
         end
-        -- do NOT call ClearVision, do NOT write EspBox/EspLine, do NOT Stop marker
         if _G.SaveModSettings then pcall(_G.SaveModSettings) end
+        -- early return: skip ScheduleFeatureRuntimeSync so ClearVision is not touched
         return
     elseif configKey == "WallhackSmart" then
         if isEnabled then
